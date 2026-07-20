@@ -1,0 +1,4 @@
+flask
+pillow
+pillow-heif
+waitress

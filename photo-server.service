@@ -1,0 +1,16 @@
+[Unit]
+Description=Photo upload server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# Adjust User and paths if your setup differs from /home/prdx/photo-server
+User=prdx
+WorkingDirectory=/home/prdx/photo-server
+EnvironmentFile=/home/prdx/photo-server/config.env
+ExecStart=/home/prdx/photo-server/venv/bin/python app.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
