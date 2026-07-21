@@ -1,0 +1,21 @@
+# secrets
+config.env
+secret.key
+
+# data
+photos/
+photos.db
+photos.db-wal
+photos.db-shm
+photos.db.bak-*
+logs/
+
+# local debugging artifacts
+pi_response.html
+downloaded.*
+
+# python
+__pycache__/
+*.py[cod]
+venv/
+.venv/

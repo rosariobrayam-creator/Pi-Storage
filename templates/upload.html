@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block title %}Upload · Pi-Storage{% endblock %}
+{% block main_class %}card-wrap{% endblock %}
+
+{% block content %}
+<div class="card">
+  <h1 class="card-title">Upload photos</h1>
+  <p class="meta">They'll land in your library, visible only to you.</p>
+
+  <form method="post" action="{{ url_for('upload') }}"
+        enctype="multipart/form-data" class="stack">
+    <input type="hidden" name="device" value="browser">
+    <input type="hidden" name="redirect" value="1">
+    <label class="filedrop">
+      <input type="file" name="file" accept="image/*,.heic,.heif" multiple required>
+      <span>Choose photos…</span>
+    </label>
+    <button class="btn" type="submit">Upload</button>
+  </form>
+
+  <p class="meta card-foot">
+    Sending from an iPhone Shortcut instead?
+    <a href="{{ url_for('account') }}">Grab your upload token</a>.
+  </p>
+</div>
+{% endblock %}

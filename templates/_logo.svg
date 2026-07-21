@@ -1,0 +1,22 @@
+<!-- Pi-Storage mark: a camera aperture with a raspberry leaf, drawn in
+     currentColor so it inherits the surrounding text colour. No external refs. -->
+<svg class="logo" viewBox="0 0 48 48" role="img" aria-label="Pi-Storage"
+     fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- leaf pair, raspberry-style -->
+  <path d="M24 10.5c-1.6-3.2-4.6-4.6-7.6-4.2.2 3 1.9 5.6 4.8 6.6"
+        stroke="currentColor" stroke-width="2" stroke-linecap="round"
+        stroke-linejoin="round"/>
+  <path d="M24 10.5c1.6-3.2 4.6-4.6 7.6-4.2-.2 3-1.9 5.6-4.8 6.6"
+        stroke="currentColor" stroke-width="2" stroke-linecap="round"
+        stroke-linejoin="round"/>
+  <!-- aperture body -->
+  <circle cx="24" cy="29" r="13" stroke="currentColor" stroke-width="2.4"/>
+  <!-- three aperture blades -->
+  <path d="M24 16v13l11.3 6.5" stroke="currentColor" stroke-width="2"
+        stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M12.7 35.5L24 29 12.7 22.5" stroke="currentColor" stroke-width="2"
+        stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M35.3 22.5L24 29v13" stroke="currentColor" stroke-width="2"
+        stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="24" cy="29" r="3.4" fill="var(--terracotta, currentColor)"/>
+</svg>

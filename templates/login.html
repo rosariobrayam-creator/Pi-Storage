@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block title %}Sign in · Pi-Storage{% endblock %}
+{% block body_class %}centered{% endblock %}
+{% block main_class %}card-wrap{% endblock %}
+
+{% block content %}
+<div class="card">
+  <h1 class="card-title">Sign in</h1>
+  <p class="meta">Your photos, on your Pi.</p>
+
+  <form method="post" class="stack">
+    <label>Username
+      <input name="username" autocomplete="username" autofocus required>
+    </label>
+    <label>Password
+      <input name="password" type="password" autocomplete="current-password" required>
+    </label>
+    <button class="btn" type="submit">Sign in</button>
+  </form>
+
+  {% if signup_open %}
+  <p class="meta card-foot">
+    Got an invite code? <a href="{{ url_for('signup') }}">Create an account</a>.
+  </p>
+  {% endif %}
+</div>
+{% endblock %}

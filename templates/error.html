@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block title %}{{ code }} · Pi-Storage{% endblock %}
+{% block body_class %}centered{% endblock %}
+{% block main_class %}card-wrap{% endblock %}
+
+{% block content %}
+<div class="card">
+  <p class="err-code">{{ code }}</p>
+  <h1 class="card-title">{{ name }}</h1>
+  <p class="meta">{{ detail }}</p>
+  <p class="card-foot">
+    <a class="btn btn-quiet" href="{{ url_for('gallery') }}">Back to the library</a>
+  </p>
+</div>
+{% endblock %}

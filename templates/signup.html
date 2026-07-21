@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block title %}Create account · Pi-Storage{% endblock %}
+{% block body_class %}centered{% endblock %}
+{% block main_class %}card-wrap{% endblock %}
+
+{% block content %}
+<div class="card">
+  <h1 class="card-title">Create an account</h1>
+  <p class="meta">You'll need the invite code from whoever runs this Pi.</p>
+
+  <form method="post" class="stack">
+    <label>Invite code
+      <input name="invite" autocomplete="off" autofocus required>
+    </label>
+    <label>Username
+      <input name="username" autocomplete="username" required
+             pattern="[A-Za-z0-9_.\-]{2,32}"
+             title="2-32 characters: letters, digits, dot, underscore, hyphen">
+    </label>
+    <label>Password
+      <input name="password" type="password" autocomplete="new-password"
+             minlength="8" required>
+    </label>
+    <label>Confirm password
+      <input name="confirm" type="password" autocomplete="new-password"
+             minlength="8" required>
+    </label>
+    <button class="btn" type="submit">Create account</button>
+  </form>
+
+  <p class="meta card-foot">
+    Already have one? <a href="{{ url_for('login') }}">Sign in</a>.
+  </p>
+</div>
+{% endblock %}

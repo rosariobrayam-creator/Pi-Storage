@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block title %}{{ user['username'] }} · Pi-Storage{% endblock %}
+{% block main_class %}card-wrap{% endblock %}
+
+{% block content %}
+<div class="card">
+  <h1 class="card-title">{{ user['username'] }}</h1>
+  <p class="meta">
+    {{ photo_count }} photo{{ '' if photo_count == 1 else 's' }} ·
+    {{ mb_used }} MB used · {{ free }} MB free on the Pi ·
+    HEIC {{ 'supported' if heic else 'NOT supported' }}
+  </p>
+
+  {% if fresh_token %}
+  <div class="token-box">
+    <p class="token-label">Your upload token — copy it now, it won't be shown again.</p>
+    <code class="token">{{ fresh_token }}</code>
+    <p class="meta">
+      In the iPhone Shortcut, set the request header
+      <code>X-API-Key</code> to that value.
+    </p>
+  </div>
+  {% else %}
+  <p class="meta">
+    Your upload token is stored hashed, so it can't be shown again.
+    Rotate it below to get a new one.
+  </p>
+  {% endif %}
+
+  <form method="post" action="{{ url_for('account_rotate') }}" class="stack">
+    <button class="btn btn-quiet" type="submit">
+      {{ 'Rotate token' if fresh_token else 'Issue a new token' }}
+    </button>
+  </form>
+
+  {% if legacy_key_on %}
+  <p class="notice">
+    The old shared <code>API_KEY</code> still works, so your existing Shortcut
+    keeps running. Once you've switched it to the personal token above, set
+    <code>ALLOW_LEGACY_KEY=0</code> in <code>config.env</code> and restart.
+  </p>
+  {% endif %}
+</div>
+{% endblock %}

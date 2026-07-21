@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% block title %}Library · Pi-Storage{% endblock %}
+{% block main_class %}wide{% endblock %}
+
+{% block content %}
+<div class="page-head">
+  <h1>Library</h1>
+  <p class="meta">
+    {{ total }} photo{{ '' if total == 1 else 's' }} ·
+    {{ free }} MB free on the Pi
+  </p>
+</div>
+
+{% if photos %}
+<div class="grid" id="grid">
+  {% for p in photos %}
+  <figure class="tile">
+    <button type="button" class="tile-btn"
+            data-id="{{ p['id'] }}"
+            data-name="{{ p['original_name'] or 'untitled' }}"
+            data-date="{{ p['uploaded_at'] }}"
+            data-device="{{ p['device'] or 'unknown device' }}"
+            data-format="{{ p['format'] }}"
+            aria-label="Open {{ p['original_name'] or 'photo' }}">
+      <img loading="lazy" decoding="async"
+           {% if p['width'] %}width="{{ p['width'] }}" height="{{ p['height'] }}"{% endif %}
+           src="{{ url_for('thumb', photo_id=p['id']) }}" alt="">
+    </button>
+  </figure>
+  {% endfor %}
+</div>
+
+<nav class="pager">
+  {% if page > 1 %}<a href="{{ url_for('gallery', page=page-1) }}">← Newer</a>{% endif %}
+  {% if has_next %}<a href="{{ url_for('gallery', page=page+1) }}">Older →</a>{% endif %}
+</nav>
+{% else %}
+<div class="empty">
+  <p class="empty-title">Nothing here yet</p>
+  <p class="meta">Photos you send to the Pi will show up here — and only here.
+    Nobody else with an account can see them.</p>
+  <a class="btn" href="{{ url_for('upload_form') }}">Upload your first photo</a>
+</div>
+{% endif %}
+
+<dialog id="lightbox" class="lightbox">
+  <button class="lb-close" data-close aria-label="Close">×</button>
+  <button class="lb-nav lb-prev" data-prev aria-label="Previous">‹</button>
+  <button class="lb-nav lb-next" data-next aria-label="Next">›</button>
+  <img id="lb-img" alt="">
+  <footer class="lb-bar">
+    <div class="lb-meta">
+      <span class="lb-name"></span>
+      <span class="lb-sub"></span>
+    </div>
+    <a class="btn btn-small" id="lb-download" href="#" download>Download original</a>
+  </footer>
+</dialog>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='app.js') }}" defer></script>
+{% endblock %}

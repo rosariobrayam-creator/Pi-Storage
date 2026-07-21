@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#F4EFE6">
+<title>{% block title %}Pi-Storage{% endblock %}</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
+<link rel="icon" href="{{ url_for('static', filename='icon.svg') }}" type="image/svg+xml">
+</head>
+<body class="{% block body_class %}{% endblock %}">
+
+<header class="topbar">
+  <a class="brand" href="{{ url_for('gallery') }}">
+    {% include "_logo.svg" %}
+    <span class="wordmark">Pi<span class="dot">·</span>Storage</span>
+  </a>
+
+  {% if current_user %}
+  <nav class="topnav">
+    <a href="{{ url_for('gallery') }}">Library</a>
+    <a href="{{ url_for('upload_form') }}">Upload</a>
+    <a href="{{ url_for('account') }}">{{ current_user.username }}</a>
+    <form method="post" action="{{ url_for('logout') }}">
+      <button class="linkish" type="submit">Sign out</button>
+    </form>
+  </nav>
+  {% endif %}
+</header>
+
+{% with messages = get_flashed_messages(with_categories=true) %}
+  {% if messages %}
+  <ul class="flashes">
+    {% for category, text in messages %}
+    <li class="flash flash-{{ category }}">{{ text }}</li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+{% endwith %}
+
+<main class="{% block main_class %}wrap{% endblock %}">
+{% block content %}{% endblock %}
+</main>
+
+{% block scripts %}{% endblock %}
+</body>
+</html>
