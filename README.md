@@ -20,9 +20,8 @@ A small Flask app for your Raspberry Pi. Your iPhone sends photos to it over HTT
 
 ```bash
 sudo apt update && sudo apt install -y python3-venv libheif1
-mkdir -p ~/photo-server && cd ~/photo-server
-# copy app.py, templates/, static/, requirements.txt, config.env.example,
-# photo-server.service here
+mkdir -p ~/Documents/Projects && cd ~/Documents/Projects
+git clone <your-repo-url> Pi-Storage && cd Pi-Storage
 python3 -m venv venv
 venv/bin/pip install -r requirements.txt
 ```
@@ -49,7 +48,7 @@ If you ran an earlier single-key version of this server, leave `API_KEY` and `AL
 ## 3. Create your account
 
 ```bash
-cd ~/photo-server
+cd ~/Documents/Projects/Pi-Storage
 set -a; source config.env; set +a
 venv/bin/python app.py create-user brayam
 ```
@@ -90,11 +89,26 @@ You should get `{"stored": 1, "owner": "brayam", ...}`; sending the same file ag
 
 ```bash
 sudo cp pi-storage.service /etc/systemd/system/
-# edit it first if your user/paths aren't /home/prdx/Pi-Storage
 sudo systemctl daemon-reload
 sudo systemctl enable --now pi-storage
 journalctl -u pi-storage -f    # watch logs
 ```
+
+The three paths in `pi-storage.service` must match wherever `app.py` actually
+lives. Run `pwd` in that folder and use exactly what it prints. If they're
+wrong, systemd fails with the unhelpful "unavailable resources or another
+system error" and never mentions the path.
+
+To repoint an already-installed unit at a different folder, edit the installed
+copy — not the repo copy, which systemd never reads:
+
+```bash
+sudo sed -i 's|/old/path|/new/path|g' /etc/systemd/system/pi-storage.service
+sudo systemctl daemon-reload && sudo systemctl restart pi-storage
+```
+
+Use `|` as the delimiter, not `/` — paths are full of slashes and `s/.../.../`
+fails with ``unknown option to `s'``.
 
 Stop any copy you started by hand first (`pkill -f app.py`) — two instances will fight over port 8000 and the database. `pgrep -af app.py` should show exactly one process afterwards.
 
@@ -103,7 +117,7 @@ Give the Pi a fixed address (DHCP reservation in your router) so the URL never b
 Redeploying after a change — templates and static files are read from disk at startup, so a restart is required:
 
 ```bash
-cd ~/Pi-Storage && git pull && sudo systemctl restart pi-storage
+cd ~/Documents/Projects/Pi-Storage && git pull && sudo systemctl restart pi-storage
 ```
 
 ## 6. iPhone Shortcut (manual + Share Sheet)
@@ -281,7 +295,7 @@ UUID=<the-uuid>  /mnt/pistorage  ext4  defaults,nofail,noatime  0  2
 sudo mount -a
 sudo chown -R prdx:prdx /mnt/pistorage
 sudo systemctl stop pi-storage
-rsync -a ~/Pi-Storage/photos/ /mnt/pistorage/photos/
+rsync -a ~/Documents/Projects/Pi-Storage/photos/ /mnt/pistorage/photos/
 ```
 
 Set `PHOTOS_DIR=/mnt/pistorage/photos` in `config.env`, then `sudo systemctl start pi-storage` and confirm the gallery still shows everything before deleting the originals.
@@ -320,4 +334,4 @@ The database migrates itself on first start; it makes a `photos.db.bak-v0` backu
 - **507** — Pi disk nearly full (below `MIN_FREE_MB`).
 - **HEIC rejected on upload** — `pillow-heif` isn't installed; see step 1, or convert to JPEG in the Shortcut. Sign in and open `/health` to see whether the running service has HEIC support.
 - **Signup says 503** — `INVITE_CODE` isn't set in `config.env`.
-- **Backups** — SD cards fail. Sync the photo folder and the database off the Pi occasionally, e.g. `rsync -a ~/photo-server/photos/ ~/photo-server/photos.db user@nas:/backup/` (cron it).
+- **Backups** — SD cards fail. Sync the photo folder and the database off the Pi occasionally, e.g. `rsync -a ~/Documents/Projects/Pi-Storage/photos/ ~/Documents/Projects/Pi-Storage/photos.db user@nas:/backup/` (cron it).

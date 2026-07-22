@@ -4,11 +4,15 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
-# Adjust User and paths if your setup differs from /home/prdx/Pi-Storage
+# All three paths must match wherever app.py actually lives -- run `pwd` in that
+# folder and use exactly what it prints. A wrong path here fails with the
+# unhelpful "unavailable resources or another system error".
 User=prdx
-WorkingDirectory=/home/prdx/Pi-Storage
-EnvironmentFile=/home/prdx/Pi-Storage/config.env
-ExecStart=/home/prdx/Pi-Storage/venv/bin/python app.py
+WorkingDirectory=/home/prdx/Documents/Projects/Pi-Storage
+# The leading "-" means "load it if it exists". Without it, systemd refuses to
+# start at all when config.env is absent, which it is on a fresh install.
+EnvironmentFile=-/home/prdx/Documents/Projects/Pi-Storage/config.env
+ExecStart=/home/prdx/Documents/Projects/Pi-Storage/venv/bin/python app.py
 Restart=on-failure
 RestartSec=5
 
