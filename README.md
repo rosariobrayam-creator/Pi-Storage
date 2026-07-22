@@ -10,10 +10,11 @@ A small Flask app for your Raspberry Pi. Your iPhone sends photos to it over HTT
 |---|---|
 | `app.py` | The whole server |
 | `templates/` | Page templates (Jinja) — includes the Pi-Storage logo, `_logo.svg` |
-| `static/` | `app.css`, `app.js`, `icon.svg` — all self-hosted, works offline |
+| `static/` | `app.css`, `app.js`, app icons — all self-hosted, works offline |
+| `tools/make_icons.py` | Regenerates the logo SVGs and PNG app icons |
 | `requirements.txt` | Python dependencies |
 | `config.env.example` | Settings template |
-| `photo-server.service` | systemd unit so it runs on boot |
+| `pi-storage.service` | systemd unit so it runs on boot |
 
 ## 1. Install on the Pi
 
@@ -88,22 +89,21 @@ You should get `{"stored": 1, "owner": "brayam", ...}`; sending the same file ag
 ## 5. Start on boot
 
 ```bash
-sudo cp photo-server.service /etc/systemd/system/
-# edit it first if your user/paths aren't /home/prdx/photo-server
+sudo cp pi-storage.service /etc/systemd/system/
+# edit it first if your user/paths aren't /home/prdx/Pi-Storage
 sudo systemctl daemon-reload
-sudo systemctl enable --now photo-server
-journalctl -u photo-server -f    # watch logs
+sudo systemctl enable --now pi-storage
+journalctl -u pi-storage -f    # watch logs
 ```
 
-Give the Pi a fixed address (DHCP reservation in your router) so the Shortcut URL never breaks.
+Stop any copy you started by hand first (`pkill -f app.py`) — two instances will fight over port 8000 and the database. `pgrep -af app.py` should show exactly one process afterwards.
+
+Give the Pi a fixed address (DHCP reservation in your router) so the URL never breaks.
 
 Redeploying after a change — templates and static files are read from disk at startup, so a restart is required:
 
 ```bash
-rsync -av app.py requirements.txt prdx@<PI_IP>:/home/prdx/photo-server/
-rsync -av --delete templates/ prdx@<PI_IP>:/home/prdx/photo-server/templates/
-rsync -av --delete static/    prdx@<PI_IP>:/home/prdx/photo-server/static/
-ssh prdx@<PI_IP> 'sudo systemctl restart photo-server'
+cd ~/Pi-Storage && git pull && sudo systemctl restart pi-storage
 ```
 
 ## 6. iPhone Shortcut (manual + Share Sheet)
@@ -120,7 +120,9 @@ ssh prdx@<PI_IP> 'sudo systemctl restart photo-server'
 5. Optionally add **Show Result** after the repeat.
 6. In the shortcut's settings (ⓘ), enable **Show in Share Sheet** → accepts **Images**. Now you can share any photo(s) from the Photos app straight to the Pi.
 
-No Shortcut needed at all if you prefer Safari: open `http://<PI_IP>:8000/upload`, sign in, and pick photos there.
+Once Tailscale is set up (§10), use the `https://<host>.<tailnet>.ts.net/upload` URL here instead of the LAN IP — then the Shortcut works from anywhere, not just at home.
+
+No Shortcut needed at all if you prefer Safari: open `/upload`, sign in, and pick photos there.
 
 ## 7. Automatic upload
 
@@ -137,6 +139,8 @@ Open `http://<PI_IP>:8000/` and sign in. Newest first, click any photo for the f
 
 HEIC photos display fine in any browser: the Pi transcodes a JPEG copy on the fly for viewing, while **Download original** in the lightbox still gives you the untouched `.heic` file.
 
+To pull photos back off the Pi — onto your camera roll or your PC — see [Getting photos back](#12-getting-photos-back).
+
 ## 9. Adding other people
 
 Two options:
@@ -146,28 +150,156 @@ Two options:
 
 Either way their photos are theirs alone — the gallery, thumbnails, full-size views and downloads are all scoped to the signed-in account, and someone else's photo ID returns a 404.
 
-## 10. Remote access and HTTPS
+## 10. Access from anywhere (Tailscale)
 
-- **Same Wi-Fi only:** works as-is.
-- **Away from home (recommended):** install [Tailscale](https://tailscale.com) on the Pi and iPhone. Use the Pi's Tailscale IP/name in the Shortcut. Traffic is WireGuard-encrypted end to end and no router ports are opened.
-- **HTTPS:** on a plain LAN, passwords and tokens travel unencrypted. To fix, put Caddy in front:
+On a plain LAN, passwords and tokens travel unencrypted, and the Pi is unreachable away from home. [Tailscale](https://tailscale.com) fixes both: a private WireGuard network between your own devices, with no router ports opened and no public exposure. It also issues a real HTTPS certificate, so there are no browser warnings.
 
-  ```bash
-  sudo apt install caddy
-  ```
+**On the Pi:**
 
-  `/etc/caddy/Caddyfile`:
+```bash
+curl -fsSL https://tailscale.com/install.sh | sh
+sudo tailscale up
+```
 
-  ```
-  :8443 {
-      tls internal
-      reverse_proxy 127.0.0.1:8000
-  }
-  ```
+Follow the printed URL to authenticate, then install Tailscale on your iPhone and sign in with the same account.
 
-  Then use `https://<PI_IP>:8443` (self-signed; or use a real domain for Let's Encrypt, or `tailscale cert` on a tailnet). Once you're on HTTPS, set `SESSION_COOKIE_SECURE=1` and `TRUST_PROXY=1` in `config.env`.
+**In the Tailscale admin console** (one-time): DNS → enable **MagicDNS**, then enable **HTTPS Certificates**. Both are required for the next command.
 
-  Don't set `SESSION_COOKIE_SECURE=1` while still on plain `http://` — the browser silently refuses to store the cookie, and login will appear to work but never stick.
+**Put HTTPS in front of the app:**
+
+```bash
+sudo tailscale serve --bg 8000
+tailscale serve status
+```
+
+That gives you a URL like `https://raspberrypi.tailnet-name.ts.net`. Load it once from a browser before going further.
+
+**Then harden the session cookie** in `config.env`:
+
+```
+SESSION_COOKIE_SECURE=1
+TRUST_PROXY=1
+```
+
+and `sudo systemctl restart pi-storage`.
+
+`TRUST_PROXY=1` isn't optional here. Tailscale Serve proxies from localhost, so without it every login looks like it came from `127.0.0.1` and the failed-login throttle would lock out everyone at once.
+
+> **Once `SESSION_COOKIE_SECURE=1` is set, stop using `http://<PI_IP>:8000`.** The browser silently discards a Secure cookie over plain HTTP, so sign-in appears to succeed and then bounces you back to the login page. Use the `https://...ts.net` URL everywhere, **including at home** — Tailscale routes it over your LAN automatically, so there's no speed penalty. One URL everywhere is simpler anyway.
+
+To undo, comment out `SESSION_COOKIE_SECURE=1` and restart.
+
+## 11. Add it to your iPhone home screen
+
+The gallery is a progressive web app, so it installs like a native one.
+
+In **Safari** (this doesn't work in Chrome), open your `https://...ts.net` URL → Share → **Add to Home Screen**. You get the Pi-Storage aperture icon, and it launches fullscreen with no browser chrome.
+
+Sign in once and iOS offers to save the password to Keychain, so afterwards it's one Face ID tap. The session lasts 30 days and survives restarts of both the phone and the Pi.
+
+Optionally add a Shortcuts action too — Shortcuts → **+** → **Open URLs** → your URL. Name it "Pi Storage" and you can trigger it by voice.
+
+## 12. Getting photos back
+
+Three ways, depending on how many you want.
+
+### One photo, straight to your camera roll
+
+Open it in the gallery and **long-press the photo itself** → *Add to Photos*. That saves the **original** file at full resolution, not the downscaled view copy — the lightbox's "Save to Photos" button points at `/original/<id>?inline=1`, which serves the untouched bytes inline so iOS will offer to save them. iOS reads HEIC natively, so your iPhone photos round-trip back perfectly.
+
+**Download original** does the same thing as a file download — on iPhone that lands in the **Files** app rather than Photos, which is usually not what you want. On a computer it's the right button.
+
+### A batch of them
+
+Tap **Select** at the top of the library, tap the photos you want (or **Select all**), then **Download zip**. You get the originals, untouched, with their real filenames. Capped at 500 photos per zip.
+
+### Automatically, into your camera roll — "Get from Pi" Shortcut
+
+This is the good one: it lands photos directly in Photos with no Files detour.
+
+1. Shortcuts app → **+** → name it "Get from Pi".
+2. **Get Contents of URL**
+   - URL: `https://<PI_HOST>/api/photos?limit=50`
+   - Method: **GET**
+   - Headers: `X-API-Key` = your upload token
+3. **Get Dictionary Value** — key `photos`, from the previous step's Contents.
+4. **Repeat with Each** — input: that list.
+5. Inside the repeat: **Get Dictionary Value** — key `original_url`, from **Repeat Item**.
+6. Inside the repeat: **Get Contents of URL**
+   - URL: the value from step 5
+   - Method: **GET**
+   - Headers: `X-API-Key` = your upload token *(needed again — each request authenticates on its own)*
+7. Inside the repeat: **Save to Photo Album**.
+
+Run it and the most recent 50 photos land in your camera roll.
+
+**Make repeat runs incremental.** Each response includes `max_id`. Save that (a text file in iCloud Drive, or the Shortcuts *Set Variable* + a Data Jar style store) and pass it back next time as `?after_id=<max_id>` — you'll only download what's new instead of re-fetching everything. Photos already in your library aren't detected as duplicates on the way *down*, so without this you'll get repeats.
+
+### The API, if you want to script it
+
+Everything below is scoped to the account whose token you send, and works with either the session cookie or `X-API-Key`.
+
+| Endpoint | What you get |
+|---|---|
+| `GET /api/photos` | JSON list, newest first. `?limit=` (max 1000), `?after_id=` for incremental pulls |
+| `GET /original/<id>` | Untouched original, as a download |
+| `GET /original/<id>?inline=1` | Untouched original, inline (long-press-savable on iOS) |
+| `GET /photo/<id>` | Display copy — always browser-renderable, HEIC transcoded to JPEG |
+| `GET /thumb/<id>` | 480px JPEG thumbnail |
+| `GET /export.zip?ids=1,2,3` | Zip of those originals (max 500) |
+| `GET /export.zip?all=1` | Zip of the whole library (max 500) |
+
+```bash
+curl -H "X-API-Key: <TOKEN>" "https://<PI_HOST>/api/photos?limit=5"
+curl -H "X-API-Key: <TOKEN>" -o photos.zip "https://<PI_HOST>/export.zip?all=1"
+```
+
+A note on the caps: a token that leaks is bad, but a token that leaks *and* can pull your entire library in one request is worse. The 500-photo ceiling and the per-export log line in `logs/server.log` are there so a stolen token can't quietly drain everything in a single call.
+
+## 13. Moving photos to a USB drive
+
+The SD card fills up eventually. Because `stored_path` is recorded relative to `PHOTOS_DIR`, pointing it at a drive keeps every existing row working — as long as the files move with it.
+
+**Format the drive as ext4.** exFAT and NTFS mount with permissions that commonly leave the drive unwritable by the service user while looking fine when you poke at it interactively — the same "works when I test it, broken in the service" trap as a mis-set `PHOTOS_DIR`.
+
+```bash
+lsblk                                   # find the device, e.g. /dev/sda1
+sudo mkfs.ext4 -L pistorage /dev/sda1   # ERASES the drive
+sudo mkdir -p /mnt/pistorage
+sudo blkid /dev/sda1                    # copy the UUID
+```
+
+Add it to `/etc/fstab` **by UUID**, not `/dev/sda1` — device names reorder across reboots and replugs:
+
+```
+UUID=<the-uuid>  /mnt/pistorage  ext4  defaults,nofail,noatime  0  2
+```
+
+`nofail` stops a missing drive from blocking boot. Then:
+
+```bash
+sudo mount -a
+sudo chown -R prdx:prdx /mnt/pistorage
+sudo systemctl stop pi-storage
+rsync -a ~/Pi-Storage/photos/ /mnt/pistorage/photos/
+```
+
+Set `PHOTOS_DIR=/mnt/pistorage/photos` in `config.env`, then `sudo systemctl start pi-storage` and confirm the gallery still shows everything before deleting the originals.
+
+**Keep the database on the SD card.** `DB_PATH`, `LOG_DIR` and `SECRET_KEY_PATH` default to sitting next to `app.py` — leave them there. SQLite on removable media is a corruption risk, and you want the database readable even when the drive isn't.
+
+**What happens if the drive doesn't mount.** The server refuses to start rather than writing to the SD card underneath the empty mount point:
+
+```
+The database lists 214 photos but /mnt/pistorage/photos is empty.
+That almost always means the drive holding them is not mounted.
+```
+
+That check exists specifically because the silent failure is so bad: photos would land on the card, the gallery would look normal, free space would read as the card's, and you'd discover it when the card filled with the library split across two places.
+
+**Multiple sticks** pooled into one library needs [mergerfs](https://github.com/trapexit/mergerfs) at the filesystem level — it presents several drives as one mount, and losing one drive loses only that drive's files. The app needs no changes; just point `PHOTOS_DIR` at the pooled mount.
+
+**A word on flash sticks.** They have poor write endurance and tend to fail without warning. If the Pi holds the only copy of these photos, an externally-powered USB SSD is meaningfully more reliable for not much more money. Either way, back up — removable storage makes the `rsync` line in Troubleshooting more important, not less.
 
 ## Upgrading from the single-key version
 

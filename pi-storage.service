@@ -1,0 +1,16 @@
+[Unit]
+Description=Pi-Storage photo server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# Adjust User and paths if your setup differs from /home/prdx/Pi-Storage
+User=prdx
+WorkingDirectory=/home/prdx/Pi-Storage
+EnvironmentFile=/home/prdx/Pi-Storage/config.env
+ExecStart=/home/prdx/Pi-Storage/venv/bin/python app.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

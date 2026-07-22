@@ -4,10 +4,15 @@
 
 {% block content %}
 <div class="page-head">
-  <h1>Library</h1>
+  <div class="page-head-row">
+    <h1>Library</h1>
+    {% if photos %}
+    <button type="button" class="btn btn-quiet btn-small" id="select-toggle">Select</button>
+    {% endif %}
+  </div>
   <p class="meta">
     {{ total }} photo{{ '' if total == 1 else 's' }} ·
-    {{ free }} MB free on the Pi
+    {% if free < 0 %}storage unavailable — check the drive{% else %}{{ free }} MB free on the Pi{% endif %}
   </p>
 </div>
 
@@ -53,9 +58,24 @@
       <span class="lb-name"></span>
       <span class="lb-sub"></span>
     </div>
-    <a class="btn btn-small" id="lb-download" href="#" download>Download original</a>
+    <div class="lb-actions">
+      <!-- Inline, so iOS long-press offers "Add to Photos" with the true
+           original rather than the downscaled display copy. -->
+      <a class="btn btn-small" id="lb-save" href="#" target="_blank"
+         rel="noopener">Save to Photos</a>
+      <a class="btn btn-small" id="lb-download" href="#" download>Download original</a>
+    </div>
   </footer>
 </dialog>
+
+<div class="selbar" id="selbar" hidden>
+  <span class="selbar-count" id="selbar-count">0 selected</span>
+  <div class="selbar-actions">
+    <button type="button" class="btn btn-small btn-quiet" id="sel-all">Select all</button>
+    <button type="button" class="btn btn-small btn-quiet" id="sel-cancel">Cancel</button>
+    <a class="btn btn-small" id="sel-download" href="#">Download zip</a>
+  </div>
+</div>
 {% endblock %}
 
 {% block scripts %}

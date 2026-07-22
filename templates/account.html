@@ -7,7 +7,8 @@
   <h1 class="card-title">{{ user['username'] }}</h1>
   <p class="meta">
     {{ photo_count }} photo{{ '' if photo_count == 1 else 's' }} ·
-    {{ mb_used }} MB used · {{ free }} MB free on the Pi ·
+    {{ mb_used }} MB used ·
+    {% if free < 0 %}storage unavailable{% else %}{{ free }} MB free on the Pi{% endif %} ·
     HEIC {{ 'supported' if heic else 'NOT supported' }}
   </p>
 

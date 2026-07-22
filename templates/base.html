@@ -2,11 +2,24 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="theme-color" content="#F4EFE6">
+<!-- viewport-fit=cover lets the layout reach under the notch; app.css then pads
+     it back with env(safe-area-inset-*). Without it the sticky header is clipped
+     when launched from the home screen. -->
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#F4EFE6" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#1A1614" media="(prefers-color-scheme: dark)">
 <title>{% block title %}Pi-Storage{% endblock %}</title>
 <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
 <link rel="icon" href="{{ url_for('static', filename='icon.svg') }}" type="image/svg+xml">
+
+<!-- Home screen app. iOS ignores SVG icons and the manifest's display mode,
+     so it needs the PNG and the apple-* tags of its own. -->
+<link rel="manifest" href="{{ url_for('manifest') }}">
+<link rel="apple-touch-icon" href="{{ url_for('static', filename='icon-180.png') }}">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Pi-Storage">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
 </head>
 <body class="{% block body_class %}{% endblock %}">
 

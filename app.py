@@ -32,14 +32,16 @@ import secrets
 import shutil
 import sqlite3
 import sys
+import tempfile
+import zipfile
 from datetime import datetime, timedelta, timezone
 from functools import wraps
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 from flask import (
-    Flask, abort, flash, g, jsonify, redirect, render_template, request,
-    send_file, session, url_for,
+    Flask, Response, abort, flash, g, jsonify, redirect, render_template,
+    request, send_file, session, stream_with_context, url_for,
 )
 from PIL import Image, ImageOps
 from werkzeug.exceptions import HTTPException
@@ -80,6 +82,12 @@ PORT = int(os.environ.get("PORT", "8000"))
 PAGE_SIZE = 200
 THUMB_EDGE = 480
 DISPLAY_EDGE = 2048
+
+# Retrieval limits. A bulk endpoint turns one leaked token into a whole-library
+# download, so cap what a single request can pull and log every export.
+API_MAX_LIMIT = 1000
+API_DEFAULT_LIMIT = 200
+MAX_EXPORT_FILES = 500
 
 # Pillow format name -> extension used on disk.
 ALLOWED_FORMATS = {
@@ -533,7 +541,19 @@ def inject_user():
 
 
 def free_mb(path: Path) -> int:
-    return shutil.disk_usage(path).free // (1024 * 1024)
+    """Free space in MB, or -1 if the path can't be reached.
+
+    Returning -1 rather than raising keeps an unmounted external drive from
+    500ing the whole gallery -- you can still sign in and see that something is
+    wrong. It also reads as "below MIN_FREE_MB" to upload(), which correctly
+    refuses to write. Deliberately does NOT mkdir the path: silently recreating
+    a mount point would start filling the SD card behind the missing drive.
+    """
+    try:
+        return shutil.disk_usage(path).free // (1024 * 1024)
+    except OSError:
+        log.warning("cannot read free space at %s -- is the drive mounted?", path)
+        return -1
 
 
 def identify_image(data: bytes):
@@ -556,7 +576,9 @@ def safe_stem(name: str) -> str:
 def resolve_stored(row) -> Path:
     """Map a DB row to its file, refusing anything outside PHOTOS_DIR."""
     src = (PHOTOS_DIR / row["stored_path"]).resolve()
-    if not str(src).startswith(str(PHOTOS_DIR.resolve())):
+    # is_relative_to, not a string prefix: "/mnt/photos" prefix-matches
+    # "/mnt/photos-old", which matters once sibling drives get related names.
+    if not src.is_relative_to(PHOTOS_DIR.resolve()):
         abort(404)
     if not src.exists():
         abort(404)
@@ -921,18 +943,206 @@ def photo(photo_id: int):
 @app.get("/original/<int:photo_id>")
 @auth_required
 def original(photo_id: int):
-    """The untouched bytes, as a download."""
+    """The untouched bytes.
+
+    Attachment by default (desktop "save as"). With ?inline=1 it is served
+    inline instead, which is what makes iOS long-press -> "Add to Photos" save
+    the true original rather than the downscaled display copy. iOS reads HEIC
+    natively, so the file round-trips back to the camera roll intact.
+    """
     row = get_photo_row(photo_id, g.identity.id)
     if row is None:
         abort(404)
     src = resolve_stored(row)
     mt = mimetypes.guess_type(str(src))[0] or "application/octet-stream"
-    return send_file(
+    inline = request.args.get("inline") == "1"
+    resp = send_file(
         src,
         mimetype=mt,
-        as_attachment=True,
+        as_attachment=not inline,
         download_name=row["original_name"] or src.name,
+        conditional=True,
     )
+    resp.cache_control.private = True
+    resp.cache_control.max_age = 86400
+    return resp
+
+
+def photo_json(row) -> dict:
+    """Shape one photo for the API. URLs are absolute so Shortcuts can use them."""
+    return {
+        "id": row["id"],
+        "name": row["original_name"],
+        "uploaded_at": row["uploaded_at"],
+        "device": row["device"],
+        "format": row["format"],
+        "size_bytes": row["size_bytes"],
+        "width": row["width"],
+        "height": row["height"],
+        "thumb_url": url_for("thumb", photo_id=row["id"], _external=True),
+        "display_url": url_for("photo", photo_id=row["id"], _external=True),
+        "original_url": url_for("original", photo_id=row["id"], _external=True),
+    }
+
+
+@app.get("/api/photos")
+@auth_required
+def api_photos():
+    """List this account's photos as JSON, for the iOS "Get from Pi" Shortcut.
+
+    Default order is newest-first. Pass ?after_id=N to pull only what arrived
+    since last time, oldest-first -- that makes repeat runs incremental instead
+    of re-downloading the whole library.
+    """
+    limit = request.args.get("limit", type=int) or API_DEFAULT_LIMIT
+    limit = max(1, min(limit, API_MAX_LIMIT))
+    after_id = request.args.get("after_id", type=int)
+
+    with db() as conn:
+        total = conn.execute(
+            "SELECT COUNT(*) AS c FROM photos WHERE owner_id = ?", (g.identity.id,)
+        ).fetchone()["c"]
+        if after_id is not None:
+            rows = conn.execute(
+                "SELECT * FROM photos WHERE owner_id = ? AND id > ?"
+                " ORDER BY id ASC LIMIT ?",
+                (g.identity.id, after_id, limit),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM photos WHERE owner_id = ? ORDER BY id DESC LIMIT ?",
+                (g.identity.id, limit),
+            ).fetchall()
+
+    photos = [photo_json(r) for r in rows]
+    return jsonify({
+        "owner": g.identity.username,
+        "total": total,
+        "count": len(photos),
+        # Feed this back as ?after_id= on the next run to fetch only what's new.
+        "max_id": max((p["id"] for p in photos), default=after_id or 0),
+        "photos": photos,
+    })
+
+
+def _requested_export_rows(owner_id: int):
+    """Resolve ?ids=/?all=1 to owner-scoped rows, or abort with a reason."""
+    with db() as conn:
+        if request.args.get("all") == "1":
+            rows = conn.execute(
+                "SELECT * FROM photos WHERE owner_id = ? ORDER BY id DESC LIMIT ?",
+                (owner_id, MAX_EXPORT_FILES + 1),
+            ).fetchall()
+        else:
+            raw = (request.args.get("ids") or "").split(",")
+            ids = [int(x) for x in raw if x.strip().isdigit()]
+            if not ids:
+                abort(400, description="Pass ?ids=1,2,3 or ?all=1.")
+            if len(ids) > MAX_EXPORT_FILES:
+                abort(400, description=f"At most {MAX_EXPORT_FILES} photos per export.")
+            marks = ",".join("?" * len(ids))
+            # owner_id in the WHERE clause is what stops one account exporting
+            # another's photos by guessing ids.
+            rows = conn.execute(
+                f"SELECT * FROM photos WHERE owner_id = ? AND id IN ({marks})"
+                " ORDER BY id DESC",
+                (owner_id, *ids),
+            ).fetchall()
+    if not rows:
+        abort(404, description="No matching photos.")
+    if len(rows) > MAX_EXPORT_FILES:
+        abort(400, description=f"At most {MAX_EXPORT_FILES} photos per export.")
+    return rows
+
+
+@app.get("/export.zip")
+@auth_required
+def export_zip():
+    """Bundle originals into a zip. Owner-scoped and capped; every call logged."""
+    rows = _requested_export_rows(g.identity.id)
+
+    tmp = tempfile.NamedTemporaryFile(suffix=".zip", delete=False)
+    tmp.close()
+    used = set()
+    written = 0
+    try:
+        with zipfile.ZipFile(tmp.name, "w", zipfile.ZIP_STORED) as zf:
+            for row in rows:
+                src = PHOTOS_DIR / row["stored_path"]
+                if not src.exists():
+                    log.warning("export skipped missing file for photo %d", row["id"])
+                    continue
+                name = row["original_name"] or src.name
+                # Originals are already compressed, so ZIP_STORED keeps the Pi's
+                # CPU out of it. Disambiguate repeats by id rather than clobber.
+                if name in used:
+                    name = f"{Path(name).stem}_{row['id']}{Path(name).suffix}"
+                used.add(name)
+                zf.write(src, arcname=name)
+                written += 1
+    except Exception:
+        Path(tmp.name).unlink(missing_ok=True)
+        raise
+
+    if not written:
+        Path(tmp.name).unlink(missing_ok=True)
+        abort(404, description="None of those photos are still on disk.")
+
+    log.info("export: %d photos for %s from %s",
+             written, g.identity.username, request.remote_addr)
+    size = os.path.getsize(tmp.name)
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+
+    # Stream it out and delete in the generator's finally, rather than handing
+    # the path to send_file and unlinking after the request. That ordering is
+    # what lets the same code work on Windows, where you can't remove a file
+    # another handle still has open -- and it keeps a 500-photo zip off the
+    # Pi's heap, which matters a lot more than the portability does.
+    def pump():
+        try:
+            with open(tmp.name, "rb") as fh:
+                while True:
+                    chunk = fh.read(65536)
+                    if not chunk:
+                        break
+                    yield chunk
+        finally:
+            Path(tmp.name).unlink(missing_ok=True)
+
+    resp = Response(stream_with_context(pump()), mimetype="application/zip")
+    resp.headers["Content-Disposition"] = f'attachment; filename="pi-storage-{stamp}.zip"'
+    resp.headers["Content-Length"] = str(size)  # so the browser shows progress
+    resp.cache_control.no_store = True
+    return resp
+
+
+@app.get("/manifest.webmanifest")
+def manifest():
+    """Makes 'Add to Home Screen' produce a real app icon rather than a bookmark.
+
+    Deliberately unauthenticated: browsers routinely fetch the manifest without
+    credentials, and a 401 here makes installation silently fall back to a
+    generic web clip. It leaks nothing but the app's name and colours.
+    """
+    resp = jsonify({
+        "name": "Pi-Storage",
+        "short_name": "Pi-Storage",
+        "description": "Your photos, on your Pi.",
+        "start_url": "/",
+        "scope": "/",
+        "display": "standalone",
+        "orientation": "portrait-primary",
+        "background_color": "#F4EFE6",
+        "theme_color": "#F4EFE6",
+        "icons": [
+            {"src": "/static/icon-192.png", "sizes": "192x192", "type": "image/png"},
+            {"src": "/static/icon-512.png", "sizes": "512x512", "type": "image/png"},
+            {"src": "/static/icon-512-maskable.png", "sizes": "512x512",
+             "type": "image/png", "purpose": "maskable"},
+        ],
+    })
+    resp.mimetype = "application/manifest+json"
+    return resp
 
 
 @app.get("/health")
@@ -966,7 +1176,8 @@ def handle_unexpected(e: Exception):
 def wants_json() -> bool:
     if request.path.startswith(("/upload", "/health")) and request.method == "POST":
         return True
-    if request.path.startswith("/health"):
+    # /api and /export are called by Shortcuts, which can't read an HTML page.
+    if request.path.startswith(("/health", "/api/", "/export")):
         return True
     accept = request.accept_mimetypes
     return accept["application/json"] > accept["text/html"]
@@ -1007,10 +1218,54 @@ def cmd_rotate_token(argv) -> None:
     print(f"Upload token: {rotate_token(row['id'])}")
 
 
+def check_storage_ready() -> None:
+    """Prepare PHOTOS_DIR, or refuse to start if it looks like an absent drive.
+
+    The dangerous case, once photos live on a USB stick or external disk: the
+    drive fails to mount, the empty mount point is still there, and an
+    unconditional mkdir would happily start writing photos onto the SD card
+    underneath it. The gallery would look fine, free space would read as the
+    card's, and you'd find out when the card filled -- with the library split
+    across two places and nothing logged.
+
+    So: only auto-create the default location, and treat "the database has
+    photos but the directory is empty" as proof the drive isn't there.
+    """
+    configured = "PHOTOS_DIR" in os.environ
+
+    if not PHOTOS_DIR.exists():
+        if configured:
+            raise SystemExit(
+                f"PHOTOS_DIR is set to {PHOTOS_DIR} but that path does not exist.\n"
+                "If it's a USB stick or external drive, mount it first "
+                "(`lsblk` to find it, `mount -a` if it's in /etc/fstab).\n"
+                "Refusing to create it, because that would write photos to the "
+                "SD card instead of the drive."
+            )
+        PHOTOS_DIR.mkdir(parents=True, exist_ok=True)
+        return
+
+    if not DB_PATH.exists():
+        return
+    with db() as conn:
+        if not _table_exists(conn, "photos"):
+            return
+        known = conn.execute("SELECT COUNT(*) AS c FROM photos").fetchone()["c"]
+    if known and not any(PHOTOS_DIR.iterdir()):
+        raise SystemExit(
+            f"The database lists {known} photos but {PHOTOS_DIR} is empty.\n"
+            "That almost always means the drive holding them is not mounted.\n"
+            "Mount it and start again. Refusing to serve, because writing new "
+            "photos here would split the library across two locations.\n"
+            "If you really did clear the photos on purpose, delete or move "
+            f"{DB_PATH} as well."
+        )
+
+
 def main() -> None:
     argv = sys.argv[1:]
     if argv and argv[0] in ("create-user", "rotate-token"):
-        PHOTOS_DIR.mkdir(parents=True, exist_ok=True)
+        check_storage_ready()
         init_db()
         migrate()
         {"create-user": cmd_create_user, "rotate-token": cmd_rotate_token}[argv[0]](argv[1:])
@@ -1018,7 +1273,7 @@ def main() -> None:
 
     if ALLOW_LEGACY_KEY and not API_KEY:
         log.info("ALLOW_LEGACY_KEY is on but API_KEY is unset; legacy uploads disabled.")
-    PHOTOS_DIR.mkdir(parents=True, exist_ok=True)
+    check_storage_ready()
     init_db()
     migrate()
 

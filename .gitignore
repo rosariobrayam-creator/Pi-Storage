@@ -19,3 +19,7 @@ __pycache__/
 *.py[cod]
 venv/
 .venv/
+config.env
+secret.key
+pi_response.html
+.venv
