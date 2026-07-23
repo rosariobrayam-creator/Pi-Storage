@@ -24,6 +24,7 @@ from __future__ import annotations  # keeps the type hints working on Python 3.9
 import hashlib
 import hmac
 import io
+import json
 import logging
 import mimetypes
 import os
@@ -31,8 +32,10 @@ import re
 import secrets
 import shutil
 import sqlite3
+import subprocess
 import sys
 import tempfile
+import threading
 import zipfile
 from datetime import datetime, timedelta, timezone
 from functools import wraps
@@ -60,6 +63,15 @@ except ImportError:
 # download HEICs as octet-stream instead of trying to display them.
 mimetypes.add_type("image/heic", ".heic")
 mimetypes.add_type("image/heif", ".heif")
+mimetypes.add_type("video/quicktime", ".mov")
+mimetypes.add_type("video/mp4", ".mp4")
+
+# Video support -- poster frames need ffmpeg (apt install ffmpeg). Ingest and
+# playback work without it; tiles just fall back to the placeholder, mirroring
+# how HEIC degrades when pillow-heif is missing.
+FFMPEG = shutil.which("ffmpeg")
+FFPROBE = shutil.which("ffprobe")
+VIDEO_SUPPORT = bool(FFMPEG)
 
 # ---------------------------------------------------------------- config
 
@@ -74,8 +86,8 @@ SECRET_KEY_PATH = Path(os.environ.get("SECRET_KEY_PATH", BASE_DIR / "secret.key"
 API_KEY = os.environ.get("API_KEY", "")
 ALLOW_LEGACY_KEY = os.environ.get("ALLOW_LEGACY_KEY", "1") == "1"
 INVITE_CODE = os.environ.get("INVITE_CODE", "")
-MAX_UPLOAD_MB = int(os.environ.get("MAX_UPLOAD_MB", "200"))  # per request
-MIN_FREE_MB = int(os.environ.get("MIN_FREE_MB", "500"))
+MAX_UPLOAD_MB = int(os.environ.get("MAX_UPLOAD_MB", "2048"))  # per request
+MIN_FREE_MB = int(os.environ.get("MIN_FREE_MB", "4096"))
 HOST = os.environ.get("HOST", "0.0.0.0")
 PORT = int(os.environ.get("PORT", "8000"))
 
@@ -105,6 +117,20 @@ BROWSER_SAFE = {"JPEG", "PNG", "GIF", "WEBP"}
 
 HEIC_MAGIC = (b"ftypheic", b"ftypheix", b"ftypmif1", b"ftyphevc", b"ftypheim")
 
+# ISO-BMFF brands that mean "video container", checked only after Pillow and
+# the HEIC hint pass on a file. iPhone camera videos are brand "qt  " (.mov).
+VIDEO_BRANDS = {
+    b"qt  ": "MOV",
+    b"isom": "MP4",
+    b"iso2": "MP4",
+    b"mp41": "MP4",
+    b"mp42": "MP4",
+    b"mp4v": "MP4",
+    b"avc1": "MP4",
+    b"M4V ": "MP4",
+}
+VIDEO_EXT = {"MOV": ".mov", "MP4": ".mp4"}
+
 # Hashing cost is a login-path concern only. PBKDF2 rather than Werkzeug 3's
 # scrypt default: scrypt wants ~32MB per verify and isn't guaranteed present on
 # 32-bit Pi OS builds. check_password_hash reads the algorithm from the stored
@@ -114,8 +140,8 @@ PW_METHOD = "pbkdf2:sha256:260000"
 PLACEHOLDER_SVG = (
     b'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48">'
     b'<rect width="48" height="48" fill="#D9CFC0"/>'
-    b'<path d="M14 30l7-8 5 6 4-4 6 6H14z" fill="#B4654A" opacity=".6"/>'
-    b'<circle cx="18" cy="17" r="3" fill="#B4654A" opacity=".6"/></svg>'
+    b'<path d="M14 30l7-8 5 6 4-4 6 6H14z" fill="#C42B4F" opacity=".6"/>'
+    b'<circle cx="18" cy="17" r="3" fill="#C42B4F" opacity=".6"/></svg>'
 )
 
 app = Flask(__name__)
@@ -214,7 +240,7 @@ CREATE TABLE IF NOT EXISTS users (
 )
 """
 
-SCHEMA_PHOTOS_V2 = """
+SCHEMA_PHOTOS_V4 = """
 CREATE TABLE {name} (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     owner_id      INTEGER NOT NULL REFERENCES users(id),
@@ -222,9 +248,16 @@ CREATE TABLE {name} (
     original_name TEXT,
     stored_path   TEXT NOT NULL,
     format        TEXT,
+    media_type    TEXT NOT NULL DEFAULT 'photo',
     size_bytes    INTEGER,
     width         INTEGER,
     height        INTEGER,
+    duration_s    REAL,
+    taken_at      TEXT,
+    latitude      REAL,
+    longitude     REAL,
+    camera        TEXT,
+    live_video_id INTEGER REFERENCES photos(id),
     device        TEXT,
     uploaded_at   TEXT NOT NULL,
     UNIQUE(owner_id, sha256)
@@ -238,10 +271,10 @@ def init_db() -> None:
         conn.execute(SCHEMA_USERS)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_users_token ON users(token_sha256)")
         if not _table_exists(conn, "photos"):
-            conn.execute(SCHEMA_PHOTOS_V2.format(name="photos"))
+            conn.execute(SCHEMA_PHOTOS_V4.format(name="photos"))
             conn.execute("CREATE TABLE IF NOT EXISTS schema_version (version INTEGER)")
             conn.execute("DELETE FROM schema_version")
-            conn.execute("INSERT INTO schema_version (version) VALUES (2)")
+            conn.execute("INSERT INTO schema_version (version) VALUES (4)")
 
 
 def _current_version(conn) -> int:
@@ -272,7 +305,7 @@ def migrate() -> None:
     with db() as conn:
         version = _current_version(conn)
 
-    if version >= 2:
+    if version >= 4:
         return
 
     _backup_db(version)
@@ -320,7 +353,7 @@ def migrate() -> None:
         try:
             conn.execute("PRAGMA foreign_keys=OFF")
             conn.execute("BEGIN")
-            conn.execute(SCHEMA_PHOTOS_V2.format(name="photos_new"))
+            conn.execute(SCHEMA_PHOTOS_V4.format(name="photos_new"))
             conn.execute(
                 "INSERT INTO photos_new (id, owner_id, sha256, original_name,"
                 " stored_path, format, size_bytes, width, height, device, uploaded_at)"
@@ -343,6 +376,40 @@ def migrate() -> None:
         finally:
             conn.execute("PRAGMA foreign_keys=ON")
             conn.close()
+        version = 2
+
+    if version == 2:
+        log.info("migrating database v2 -> v3")
+        # v3 adds video support: media_type ('photo'/'video') and duration_s.
+        # Purely additive, so older code still runs against a migrated DB.
+        with db() as conn:
+            if not _has_column(conn, "photos", "media_type"):
+                conn.execute(
+                    "ALTER TABLE photos ADD COLUMN media_type TEXT NOT NULL DEFAULT 'photo'"
+                )
+            if not _has_column(conn, "photos", "duration_s"):
+                conn.execute("ALTER TABLE photos ADD COLUMN duration_s REAL")
+            conn.execute("DELETE FROM schema_version")
+            conn.execute("INSERT INTO schema_version (version) VALUES (3)")
+        version = 3
+
+    if version == 3:
+        log.info("migrating database v3 -> v4")
+        # v4 adds capture details (taken_at, GPS, camera) and Live Photo
+        # pairing. Additive again. Existing rows stay NULL until
+        # `python app.py backfill-details` re-reads their files.
+        with db() as conn:
+            for col, decl in (
+                ("taken_at", "TEXT"),
+                ("latitude", "REAL"),
+                ("longitude", "REAL"),
+                ("camera", "TEXT"),
+                ("live_video_id", "INTEGER REFERENCES photos(id)"),
+            ):
+                if not _has_column(conn, "photos", col):
+                    conn.execute(f"ALTER TABLE photos ADD COLUMN {col} {decl}")
+            conn.execute("DELETE FROM schema_version")
+            conn.execute("INSERT INTO schema_version (version) VALUES (4)")
 
 
 def get_photo_row(photo_id: int, owner_id: int):
@@ -556,15 +623,126 @@ def free_mb(path: Path) -> int:
         return -1
 
 
-def identify_image(data: bytes):
-    """Return (format, width, height) if data is a readable image, else None."""
+def identify_image(path: Path):
+    """Return (format, width, height) if path is a readable image, else None.
+
+    Reads from disk rather than bytes so a 2GB upload never has to sit in RAM
+    just to find out it isn't an image.
+    """
     try:
-        with Image.open(io.BytesIO(data)) as im:
+        with Image.open(path) as im:
             im.verify()  # integrity check; invalidates the object
-        with Image.open(io.BytesIO(data)) as im:
+        with Image.open(path) as im:
             return im.format, im.width, im.height
     except Exception:
         return None
+
+
+def identify_video(head: bytes) -> str | None:
+    """Return "MOV"/"MP4" if the first bytes look like a video container.
+
+    ISO-BMFF: bytes 4-8 are "ftyp", 8-12 the brand. HEIC shares the layout but
+    its brands aren't in VIDEO_BRANDS, so photos can't be misfiled as videos.
+    """
+    if len(head) >= 12 and head[4:8] == b"ftyp":
+        return VIDEO_BRANDS.get(head[8:12])
+    return None
+
+
+# "+37.3349-122.0090+018.337/" -- the ISO 6709 string Apple stores in videos.
+ISO6709_RE = re.compile(r"^([+-]\d+(?:\.\d+)?)([+-]\d+(?:\.\d+)?)")
+
+
+def probe_video(path: Path) -> dict:
+    """Width/height/duration plus capture details via one ffprobe call.
+
+    Returns a dict with keys width, height, duration_s, taken_at, latitude,
+    longitude, camera -- any of which may be None. Metadata here is nice to
+    have, never load-bearing.
+    """
+    out = {"width": None, "height": None, "duration_s": None,
+           "taken_at": None, "latitude": None, "longitude": None, "camera": None}
+    if not FFPROBE:
+        return out
+    try:
+        raw = subprocess.run(
+            [FFPROBE, "-v", "error", "-select_streams", "v:0",
+             "-show_entries", "stream=width,height:format=duration:format_tags",
+             "-of", "json", str(path)],
+            capture_output=True, timeout=30, check=True,
+        ).stdout
+        info = json.loads(raw)
+        stream = (info.get("streams") or [{}])[0]
+        fmt = info.get("format") or {}
+        tags = {k.lower(): v for k, v in (fmt.get("tags") or {}).items()}
+
+        out["width"] = stream.get("width")
+        out["height"] = stream.get("height")
+        if fmt.get("duration"):
+            out["duration_s"] = float(fmt["duration"])
+        # Apple's creationdate carries the local timezone; creation_time is UTC.
+        out["taken_at"] = (tags.get("com.apple.quicktime.creationdate")
+                           or tags.get("creation_time") or None)
+        loc = (tags.get("com.apple.quicktime.location.iso6709")
+               or tags.get("location") or "")
+        m = ISO6709_RE.match(loc)
+        if m:
+            out["latitude"], out["longitude"] = float(m.group(1)), float(m.group(2))
+        out["camera"] = tags.get("com.apple.quicktime.model") or None
+    except Exception:
+        log.warning("ffprobe failed for %s", path)
+    return out
+
+
+def _gps_to_float(vals, ref) -> float | None:
+    """EXIF GPS (deg, min, sec) rationals + N/S/E/W ref -> signed decimal."""
+    try:
+        deg, minutes, seconds = (float(v) for v in vals)
+        out = deg + minutes / 60 + seconds / 3600
+        if str(ref).upper() in ("S", "W"):
+            out = -out
+        return round(out, 6)
+    except Exception:
+        return None
+
+
+def extract_image_details(path: Path) -> dict:
+    """taken_at / latitude / longitude / camera from EXIF, all optional.
+
+    Screenshots and messaging-app downloads legitimately have no EXIF at all,
+    so every field degrades to None rather than failing the upload.
+    """
+    out = {"taken_at": None, "latitude": None, "longitude": None, "camera": None}
+    try:
+        with Image.open(path) as im:
+            exif = im.getexif()
+    except Exception:
+        return out
+    if not exif:
+        return out
+    try:
+        make = str(exif.get(271) or "").strip()   # Make
+        model = str(exif.get(272) or "").strip()  # Model
+        if model:
+            # "Apple iPhone 14" reads better than "iPhone 14 iPhone 14".
+            out["camera"] = model if model.startswith(make) or not make else f"{make} {model}"
+
+        sub = exif.get_ifd(0x8769)  # Exif sub-IFD
+        dt = sub.get(36867) or sub.get(36868) or exif.get(306)  # DateTimeOriginal
+        if dt:
+            # EXIF "2026:07:23 12:30:00" -> ISO "2026-07-23T12:30:00"
+            dt = str(dt).strip()
+            if len(dt) >= 19 and dt[4] == ":" and dt[7] == ":":
+                dt = dt[:4] + "-" + dt[5:7] + "-" + dt[8:10] + "T" + dt[11:19]
+            out["taken_at"] = dt
+
+        gps = exif.get_ifd(0x8825)  # GPS IFD
+        if gps:
+            out["latitude"] = _gps_to_float(gps.get(2), gps.get(1))
+            out["longitude"] = _gps_to_float(gps.get(4), gps.get(3))
+    except Exception:
+        log.warning("EXIF parse failed for %s", path)
+    return out
 
 
 def safe_stem(name: str) -> str:
@@ -606,6 +784,37 @@ def render_cached(src: Path, dest: Path, max_edge: int, quality: int) -> Path:
     return dest
 
 
+# A gallery page of freshly-uploaded videos must not fork one ffmpeg per tile:
+# waitress serves thumbnails from multiple threads, and a Pi 4 has four cores.
+FFMPEG_SEM = threading.Semaphore(2)
+
+
+def render_video_poster(src: Path, dest: Path) -> Path:
+    """Extract a poster frame with ffmpeg, atomically like render_cached."""
+    if not FFMPEG:
+        raise RuntimeError("ffmpeg is not installed; no poster frames")
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    # ffmpeg picks the output format from the extension, so the temp name
+    # must end in .jpg -- unlike render_cached's bare .tmp.
+    tmp = dest.with_name(f".{dest.name}.{os.getpid()}.tmp.jpg")
+    try:
+        with FFMPEG_SEM:
+            base = [FFMPEG, "-y", "-v", "error"]
+            args = ["-frames:v", "1", "-vf", f"scale='min({THUMB_EDGE},iw)':-2",
+                    "-q:v", "4", str(tmp)]
+            subprocess.run(base + ["-ss", "0.5", "-i", str(src)] + args,
+                           capture_output=True, timeout=60, check=True)
+            if not tmp.exists():
+                # Clips shorter than the seek point produce no frame; retry
+                # from the very start rather than serving a placeholder.
+                subprocess.run(base + ["-i", str(src)] + args,
+                               capture_output=True, timeout=60, check=True)
+        os.replace(tmp, dest)
+    finally:
+        Path(tmp).unlink(missing_ok=True)
+    return dest
+
+
 def cached_image(path: Path, mimetype: str = "image/jpeg"):
     resp = send_file(path, mimetype=mimetype, conditional=True)
     resp.cache_control.private = True  # per-user; never let a proxy share these
@@ -613,91 +822,173 @@ def cached_image(path: Path, mimetype: str = "image/jpeg"):
     return resp
 
 
+# A Live Photo's clip runs about 3s; anything longer is just a video.
+LIVE_VIDEO_MAX_S = 6.5
+
+
+def pair_live_photo(conn, owner_id: int, new_id: int, media_type: str,
+                    original_name: str, duration_s) -> None:
+    """Link a still and its Live Photo clip when both halves have arrived.
+
+    iOS exports the pair as IMG_1234.HEIC + IMG_1234.MOV, so match on the
+    filename stem within the owner's library, in either upload order. Runs in
+    the caller's transaction alongside the INSERT.
+    """
+    stem = Path(original_name or "").stem
+    if not stem:
+        return
+    like = (stem.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            .lower() + ".%")
+    if media_type == "photo":
+        row = conn.execute(
+            "SELECT id FROM photos WHERE owner_id = ? AND media_type = 'video'"
+            " AND duration_s IS NOT NULL AND duration_s <= ?"
+            " AND LOWER(original_name) LIKE ? ESCAPE '\\'"
+            " AND id NOT IN (SELECT live_video_id FROM photos"
+            "                WHERE live_video_id IS NOT NULL)"
+            " ORDER BY id DESC LIMIT 1",
+            (owner_id, LIVE_VIDEO_MAX_S, like),
+        ).fetchone()
+        if row:
+            conn.execute("UPDATE photos SET live_video_id = ? WHERE id = ?",
+                         (row["id"], new_id))
+            log.info("paired live photo %d with clip %d", new_id, row["id"])
+    elif duration_s is not None and duration_s <= LIVE_VIDEO_MAX_S:
+        row = conn.execute(
+            "SELECT id FROM photos WHERE owner_id = ? AND media_type = 'photo'"
+            " AND live_video_id IS NULL AND LOWER(original_name) LIKE ? ESCAPE '\\'"
+            " ORDER BY id DESC LIMIT 1",
+            (owner_id, like),
+        ).fetchone()
+        if row:
+            conn.execute("UPDATE photos SET live_video_id = ? WHERE id = ?",
+                         (new_id, row["id"]))
+            log.info("paired live photo %d with clip %d", row["id"], new_id)
+
+
 def store_photo(file_storage, owner_id: int, device: str) -> dict:
     original = file_storage.filename or ""
-    data = file_storage.read()
-    if not data:
-        return {"original_name": original, "status": "rejected", "reason": "empty file"}
-
-    sha = hashlib.sha256(data).hexdigest()
-    with db() as conn:
-        row = conn.execute(
-            "SELECT id FROM photos WHERE owner_id = ? AND sha256 = ?", (owner_id, sha)
-        ).fetchone()
-    if row:
-        return {"original_name": original, "status": "duplicate", "id": row["id"]}
-
-    ident = identify_image(data)
-    if ident is None:
-        if len(data) > 12 and data[4:12] in HEIC_MAGIC:
-            return {
-                "original_name": original,
-                "status": "rejected",
-                "reason": "HEIC photo received but pillow-heif is not installed on the server",
-            }
-        return {
-            "original_name": original,
-            "status": "rejected",
-            "reason": "not a supported image (unreadable)",
-        }
-    fmt, width, height = ident
-    if fmt not in ALLOWED_FORMATS:
-        return {
-            "original_name": original,
-            "status": "rejected",
-            "reason": f"not a supported image (detected: {fmt})",
-        }
 
     now = datetime.now()
     # Per-user subdirectory, so a filesystem-level slip can't cross accounts.
     subdir = PHOTOS_DIR / f"u{owner_id}" / now.strftime("%Y/%m/%d")
     subdir.mkdir(parents=True, exist_ok=True)
 
-    stem = safe_stem(original)
-    name = (
-        now.strftime("%Y%m%d-%H%M%S")
-        + "_"
-        + sha[:8]
-        + ("_" + stem if stem else "")
-        + ALLOWED_FORMATS[fmt]
-    )
-    dest = subdir / name
-    # Write to a temp name and only move into place once the row is committed,
-    # so losing an insert race can't delete the winner's file.
-    tmp = subdir / f".{name}.{os.getpid()}.tmp"
-    tmp.write_bytes(data)
-
+    # Stream to a temp file in 1MB chunks, hashing as we go: a 2GB video must
+    # never sit in RAM on a 4GB Pi. Written into the destination directory so
+    # the final os.replace stays a same-filesystem atomic rename. The sha (and
+    # so the dedup check) is only known once the file is fully on disk; a
+    # duplicate costs one wasted write, which is fine.
+    tmp = subdir / f".upload.{os.getpid()}.{secrets.token_hex(4)}.tmp"
+    sha256 = hashlib.sha256()
+    head = b""
+    size = 0
     try:
+        with open(tmp, "wb") as out:
+            while True:
+                chunk = file_storage.stream.read(1024 * 1024)
+                if not chunk:
+                    break
+                if len(head) < 16:
+                    head += chunk[: 16 - len(head)]
+                sha256.update(chunk)
+                out.write(chunk)
+                size += len(chunk)
+        if not size:
+            return {"original_name": original, "status": "rejected", "reason": "empty file"}
+
+        sha = sha256.hexdigest()
         with db() as conn:
-            cur = conn.execute(
-                "INSERT INTO photos (owner_id, sha256, original_name, stored_path,"
-                " format, size_bytes, width, height, device, uploaded_at)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (
-                    owner_id,
-                    sha,
-                    original,
-                    str(dest.relative_to(PHOTOS_DIR)),
-                    fmt,
-                    len(data),
-                    width,
-                    height,
-                    device,
-                    datetime.now(timezone.utc).isoformat(timespec="seconds"),
-                ),
-            )
-            photo_id = cur.lastrowid
-        os.replace(tmp, dest)
-    except sqlite3.IntegrityError:  # same photo uploaded concurrently
+            row = conn.execute(
+                "SELECT id FROM photos WHERE owner_id = ? AND sha256 = ?", (owner_id, sha)
+            ).fetchone()
+        if row:
+            return {"original_name": original, "status": "duplicate", "id": row["id"]}
+
+        width = height = duration_s = None
+        details = {"taken_at": None, "latitude": None, "longitude": None, "camera": None}
+        ident = identify_image(tmp)
+        if ident is not None:
+            fmt, width, height = ident
+            if fmt not in ALLOWED_FORMATS:
+                return {
+                    "original_name": original,
+                    "status": "rejected",
+                    "reason": f"not a supported image (detected: {fmt})",
+                }
+            media_type = "photo"
+            ext = ALLOWED_FORMATS[fmt]
+            details = extract_image_details(tmp)
+        else:
+            if len(head) >= 12 and head[4:12] in HEIC_MAGIC:
+                return {
+                    "original_name": original,
+                    "status": "rejected",
+                    "reason": "HEIC photo received but pillow-heif is not installed on the server",
+                }
+            fmt = identify_video(head)
+            if fmt is None:
+                return {
+                    "original_name": original,
+                    "status": "rejected",
+                    "reason": "not a supported image or video (unreadable)",
+                }
+            media_type = "video"
+            ext = VIDEO_EXT[fmt]
+            probed = probe_video(tmp)
+            width, height = probed["width"], probed["height"]
+            duration_s = probed["duration_s"]
+            details = {k: probed[k] for k in ("taken_at", "latitude", "longitude", "camera")}
+
+        stem = safe_stem(original)
+        name = (
+            now.strftime("%Y%m%d-%H%M%S")
+            + "_"
+            + sha[:8]
+            + ("_" + stem if stem else "")
+            + ext
+        )
+        dest = subdir / name
+
+        # Insert first and only then move into place, so losing an insert race
+        # can't delete the winner's file.
+        try:
+            with db() as conn:
+                cur = conn.execute(
+                    "INSERT INTO photos (owner_id, sha256, original_name, stored_path,"
+                    " format, media_type, size_bytes, width, height, duration_s,"
+                    " taken_at, latitude, longitude, camera, device, uploaded_at)"
+                    " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        owner_id,
+                        sha,
+                        original,
+                        str(dest.relative_to(PHOTOS_DIR)),
+                        fmt,
+                        media_type,
+                        size,
+                        width,
+                        height,
+                        duration_s,
+                        details["taken_at"],
+                        details["latitude"],
+                        details["longitude"],
+                        details["camera"],
+                        device,
+                        datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                    ),
+                )
+                photo_id = cur.lastrowid
+                pair_live_photo(conn, owner_id, photo_id, media_type, original, duration_s)
+            os.replace(tmp, dest)
+        except sqlite3.IntegrityError:  # same file uploaded concurrently
+            return {"original_name": original, "status": "duplicate"}
+    finally:
         tmp.unlink(missing_ok=True)
-        return {"original_name": original, "status": "duplicate"}
-    except Exception:
-        tmp.unlink(missing_ok=True)
-        raise
 
     log.info(
-        "stored %s (%d bytes, %s) owner=%d device=%r -> %s",
-        original or "<unnamed>", len(data), fmt, owner_id, device, dest,
+        "stored %s (%d bytes, %s %s) owner=%d device=%r -> %s",
+        original or "<unnamed>", size, media_type, fmt, owner_id, device, dest,
     )
     return {
         "original_name": original,
@@ -816,6 +1107,7 @@ def account():
         mb_used=round(bytes_used / (1024 * 1024), 1),
         free=free_mb(PHOTOS_DIR),
         heic=HEIC_SUPPORT,
+        video=VIDEO_SUPPORT,
         fresh_token=session.pop("fresh_token", None),
         legacy_key_on=ALLOW_LEGACY_KEY and bool(API_KEY),
     )
@@ -878,15 +1170,23 @@ def gallery():
     me = g.identity
     page = max(1, request.args.get("page", type=int) or 1)
     offset = (page - 1) * PAGE_SIZE
+    # A Live Photo's clip is part of its still, not a separate item -- keep it
+    # out of the grid and the count.
+    not_live_clip = (
+        " AND id NOT IN (SELECT live_video_id FROM photos"
+        "                WHERE owner_id = ? AND live_video_id IS NOT NULL)"
+    )
     with db() as conn:
         total = conn.execute(
-            "SELECT COUNT(*) AS c FROM photos WHERE owner_id = ?", (me.id,)
+            "SELECT COUNT(*) AS c FROM photos WHERE owner_id = ?" + not_live_clip,
+            (me.id, me.id),
         ).fetchone()["c"]
         rows = conn.execute(
             "SELECT id, original_name, uploaded_at, device, width, height, format,"
-            " size_bytes FROM photos WHERE owner_id = ?"
+            " media_type, duration_s, taken_at, latitude, longitude, camera,"
+            " live_video_id, size_bytes FROM photos WHERE owner_id = ?" + not_live_clip +
             " ORDER BY id DESC LIMIT ? OFFSET ?",
-            (me.id, PAGE_SIZE, offset),
+            (me.id, me.id, PAGE_SIZE, offset),
         ).fetchall()
     return render_template(
         "gallery.html",
@@ -907,7 +1207,11 @@ def thumb(photo_id: int):
     tpath = THUMBS_DIR / f"{photo_id}.jpg"
     if not tpath.exists():
         try:
-            render_cached(resolve_stored(row), tpath, THUMB_EDGE, 80)
+            src = resolve_stored(row)
+            if row["media_type"] == "video":
+                render_video_poster(src, tpath)
+            else:
+                render_cached(src, tpath, THUMB_EDGE, 80)
         except HTTPException:
             raise
         except Exception:
@@ -930,6 +1234,10 @@ def photo(photo_id: int):
     row = get_photo_row(photo_id, g.identity.id)
     if row is None:
         abort(404)
+    if row["media_type"] == "video":
+        # Stale links and lightbox preloads degrade to the stream instead of
+        # crashing Pillow on a video file.
+        return redirect(url_for("media", photo_id=photo_id))
     src = resolve_stored(row)
     if row["format"] in BROWSER_SAFE:
         mt = mimetypes.guess_type(str(src))[0] or "image/jpeg"
@@ -938,6 +1246,22 @@ def photo(photo_id: int):
     if not dpath.exists():
         render_cached(src, dpath, DISPLAY_EDGE, 85)
     return cached_image(dpath)
+
+
+@app.get("/media/<int:photo_id>")
+@auth_required
+def media(photo_id: int):
+    """Stream a video inline. conditional=True turns on HTTP Range (206),
+    which iOS Safari requires before it will play or scrub anything."""
+    row = get_photo_row(photo_id, g.identity.id)
+    if row is None:
+        abort(404)
+    src = resolve_stored(row)
+    mt = mimetypes.guess_type(str(src))[0] or "application/octet-stream"
+    resp = send_file(src, mimetype=mt, conditional=True)
+    resp.cache_control.private = True
+    resp.cache_control.max_age = 86400
+    return resp
 
 
 @app.get("/original/<int:photo_id>")
@@ -976,11 +1300,21 @@ def photo_json(row) -> dict:
         "uploaded_at": row["uploaded_at"],
         "device": row["device"],
         "format": row["format"],
+        "media_type": row["media_type"],
         "size_bytes": row["size_bytes"],
         "width": row["width"],
         "height": row["height"],
+        "duration_s": row["duration_s"],
+        "taken_at": row["taken_at"],
+        "latitude": row["latitude"],
+        "longitude": row["longitude"],
+        "camera": row["camera"],
+        "live_video_id": row["live_video_id"],
         "thumb_url": url_for("thumb", photo_id=row["id"], _external=True),
-        "display_url": url_for("photo", photo_id=row["id"], _external=True),
+        "display_url": url_for(
+            "media" if row["media_type"] == "video" else "photo",
+            photo_id=row["id"], _external=True,
+        ),
         "original_url": url_for("original", photo_id=row["id"], _external=True),
     }
 
@@ -1150,7 +1484,8 @@ def health():
     # Deliberately thin for anonymous callers; the detail lives on /account.
     if load_identity() is not None:
         return jsonify(
-            {"status": "ok", "free_mb": free_mb(PHOTOS_DIR), "heic_support": HEIC_SUPPORT}
+            {"status": "ok", "free_mb": free_mb(PHOTOS_DIR),
+             "heic_support": HEIC_SUPPORT, "video_support": VIDEO_SUPPORT}
         )
     return jsonify({"status": "ok"})
 
@@ -1218,6 +1553,56 @@ def cmd_rotate_token(argv) -> None:
     print(f"Upload token: {rotate_token(row['id'])}")
 
 
+def cmd_backfill(argv) -> None:
+    """Re-read stored files to fill the capture details added in schema v4.
+
+    Uploads made before v4 have NULL taken_at/GPS/camera; this walks the
+    library once and fills what the files can still tell us. Safe to re-run:
+    rows that already have details are skipped.
+    """
+    with db() as conn:
+        rows = conn.execute("SELECT * FROM photos ORDER BY id").fetchall()
+    updated = missing = 0
+    for row in rows:
+        src = PHOTOS_DIR / row["stored_path"]
+        if not src.exists():
+            missing += 1
+            continue
+        if not (row["taken_at"] is None and row["camera"] is None
+                and row["latitude"] is None):
+            continue
+        duration = row["duration_s"]
+        if row["media_type"] == "video":
+            p = probe_video(src)
+            vals = (p["taken_at"], p["latitude"], p["longitude"], p["camera"])
+            duration = duration if duration is not None else p["duration_s"]
+        else:
+            d = extract_image_details(src)
+            vals = (d["taken_at"], d["latitude"], d["longitude"], d["camera"])
+        if any(v is not None for v in vals) or duration != row["duration_s"]:
+            with db() as conn:
+                conn.execute(
+                    "UPDATE photos SET taken_at = ?, latitude = ?, longitude = ?,"
+                    " camera = ?, duration_s = ? WHERE id = ?",
+                    (*vals, duration, row["id"]),
+                )
+            updated += 1
+    # Pair any Live Photos whose halves were both uploaded before v4 existed.
+    with db() as conn:
+        stills = conn.execute(
+            "SELECT id, owner_id, original_name FROM photos"
+            " WHERE media_type = 'photo' AND live_video_id IS NULL"
+            " AND original_name IS NOT NULL"
+        ).fetchall()
+        for s in stills:
+            pair_live_photo(conn, s["owner_id"], s["id"], "photo",
+                            s["original_name"], None)
+        pairs = conn.execute(
+            "SELECT COUNT(*) AS c FROM photos WHERE live_video_id IS NOT NULL"
+        ).fetchone()["c"]
+    print(f"details filled: {updated} | files missing: {missing} | live photo pairs: {pairs}")
+
+
 def check_storage_ready() -> None:
     """Prepare PHOTOS_DIR, or refuse to start if it looks like an absent drive.
 
@@ -1264,11 +1649,12 @@ def check_storage_ready() -> None:
 
 def main() -> None:
     argv = sys.argv[1:]
-    if argv and argv[0] in ("create-user", "rotate-token"):
+    if argv and argv[0] in ("create-user", "rotate-token", "backfill-details"):
         check_storage_ready()
         init_db()
         migrate()
-        {"create-user": cmd_create_user, "rotate-token": cmd_rotate_token}[argv[0]](argv[1:])
+        {"create-user": cmd_create_user, "rotate-token": cmd_rotate_token,
+         "backfill-details": cmd_backfill}[argv[0]](argv[1:])
         return
 
     if ALLOW_LEGACY_KEY and not API_KEY:
@@ -1286,13 +1672,17 @@ def main() -> None:
         )
 
     log.info(
-        "serving on %s:%d | photos -> %s | HEIC: %s | signup: %s",
-        HOST, PORT, PHOTOS_DIR, HEIC_SUPPORT, "invite-only" if INVITE_CODE else "off",
+        "serving on %s:%d | photos -> %s | HEIC: %s | video: %s | signup: %s",
+        HOST, PORT, PHOTOS_DIR, HEIC_SUPPORT, VIDEO_SUPPORT,
+        "invite-only" if INVITE_CODE else "off",
     )
     try:
         from waitress import serve  # production-grade WSGI server
 
-        serve(app, host=HOST, port=PORT)
+        # waitress has its own body cap (default 1GB) that would 413 large
+        # videos before Flask's MAX_CONTENT_LENGTH ever saw them.
+        serve(app, host=HOST, port=PORT,
+              max_request_body_size=MAX_UPLOAD_MB * 1024 * 1024)
     except ImportError:
         app.run(host=HOST, port=PORT)
 

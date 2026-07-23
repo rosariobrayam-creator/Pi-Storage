@@ -1,6 +1,6 @@
 /* Pi-Storage --------------------------------------------------------------
    Apple Photos bones (dense square grid, sticky chrome, lightbox) wearing a
-   vintage-Instagram coat: warm paper, terracotta ink, a serif wordmark and a
+   vintage-Instagram coat: warm paper, raspberry ink, a serif wordmark and a
    little film grain. Everything is self-hosted -- no fonts, no CDNs -- because
    the Pi is often offline.
    ------------------------------------------------------------------------ */
@@ -10,11 +10,16 @@
   --paper-2:    #EDE5D8;
   --ink:        #2B2320;
   --ink-soft:   #6B5E55;
-  --terracotta: #B4654A;
-  --sage:       #7C8B6F;
+  --berry:      #C42B4F;   /* raspberry -- the Pi finally matches its name */
+  --berry-deep: #A02040;   /* hover / pressed */
+  --sage:       #7C8B6F;   /* ok flashes and notices */
+  --honey:      #C98A2C;   /* warnings, future badges */
+  --sky:        #3B79B8;   /* reserved for future badges */
   --dust:       #D9CFC0;
   --line:       #DCD1C0;
   --shadow:     rgba(43, 35, 32, .12);
+  --btn-ink:    #FFF8F0;   /* text on a berry button */
+  --lb-ink:     #F4EFE6;   /* lightbox chrome; scrim is dark in both schemes */
 
   --serif: ui-serif, Georgia, "Iowan Old Style", "Palatino Linotype",
            "Times New Roman", serif;
@@ -38,11 +43,17 @@
     --paper-2:    #241E1B;
     --ink:        #EFE7DC;
     --ink-soft:   #A29386;
-    --terracotta: #D98466;
+    --berry:      #EE6B8D;
+    --berry-deep: #D94F73;
     --sage:       #9BAA8C;
+    --honey:      #E0A94F;
+    --sky:        #7FB3E8;
     --dust:       #3A322C;
     --line:       #362E29;
     --shadow:     rgba(0, 0, 0, .5);
+    /* The berry buttons are light pink here, so near-white text would wash
+       out -- flip the button ink dark instead. */
+    --btn-ink:    #2A0D15;
   }
 }
 
@@ -79,7 +90,7 @@ body::before {
 body.centered { display: flex; flex-direction: column; }
 body.centered main { flex: 1; display: grid; place-items: center; }
 
-a { color: var(--terracotta); text-decoration-thickness: 1px; text-underline-offset: 2px; }
+a { color: var(--berry); text-decoration-thickness: 1px; text-underline-offset: 2px; }
 a:hover { color: var(--ink); }
 
 /* ---------------------------------------------------------------- topbar */
@@ -116,7 +127,7 @@ a:hover { color: var(--ink); }
   letter-spacing: .01em;
   font-weight: 600;
 }
-.wordmark .dot { color: var(--terracotta); }
+.wordmark .dot { color: var(--berry); }
 
 .topnav { display: flex; align-items: center; gap: clamp(.6rem, 2vw, 1.25rem); }
 .topnav a, .linkish {
@@ -125,7 +136,7 @@ a:hover { color: var(--ink); }
   text-decoration: none;
   white-space: nowrap;
 }
-.topnav a:hover, .linkish:hover { color: var(--terracotta); }
+.topnav a:hover, .linkish:hover { color: var(--berry); }
 .topnav form { margin: 0; }
 .linkish {
   background: none; border: 0; padding: 0;
@@ -161,20 +172,43 @@ main { position: relative; z-index: 1; }
 .grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(clamp(96px, 14vw, 190px), 1fr));
-  gap: 3px;
+  gap: 10px;
 }
 
-.tile { margin: 0; }
+/* Tiles land with a small staggered rise, like apps settling onto a home
+   screen. "backwards" keeps them invisible until their delay comes up. */
+@keyframes tile-in {
+  from { opacity: 0; transform: translateY(10px) scale(.97); }
+}
+
+.tile {
+  margin: 0;
+  animation: tile-in .35s ease backwards;
+  animation-delay: calc(var(--i, 0) * 28ms);
+}
 .tile-btn {
   display: block;
   width: 100%;
   padding: 0;
   border: 0;
   background: var(--dust);
-  border-radius: 3px;
+  border-radius: 14px;
   overflow: hidden;
   cursor: pointer;
   position: relative;
+  box-shadow: 0 1px 3px var(--shadow), 0 6px 16px -8px var(--shadow);
+  transition: transform .25s ease, box-shadow .25s ease;
+  -webkit-tap-highlight-color: transparent;
+}
+.tile-btn:hover, .tile-btn:focus-visible {
+  transform: translateY(-3px) scale(1.02);
+  box-shadow: 0 4px 10px var(--shadow), 0 16px 28px -12px var(--shadow);
+}
+/* The 3D-button press: quick sink on tap, slower spring back on release. */
+.tile-btn:active {
+  transform: translateY(0) scale(.96);
+  box-shadow: 0 1px 2px var(--shadow);
+  transition-duration: .08s;
 }
 .tile-btn img {
   display: block;
@@ -190,7 +224,37 @@ main { position: relative; z-index: 1; }
   filter: none;
   transform: scale(1.04);
 }
-.tile-btn:focus-visible { outline: 2px solid var(--terracotta); outline-offset: 2px; }
+.tile-btn:focus-visible { outline: 2px solid var(--berry); outline-offset: 2px; }
+
+/* Video duration badge, bottom-right like every photos app. */
+.tile-dur {
+  position: absolute;
+  z-index: 1;
+  right: .45rem;
+  bottom: .45rem;
+  padding: .1rem .5rem;
+  font-size: .72rem;
+  font-variant-numeric: tabular-nums;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, .55);
+  color: #FFF;
+  pointer-events: none;
+}
+
+/* Live Photo chip, top-left like Apple's. */
+.tile-live {
+  position: absolute;
+  z-index: 1;
+  left: .45rem;
+  top: .45rem;
+  padding: .1rem .5rem;
+  font-size: .66rem;
+  letter-spacing: .06em;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, .55);
+  color: #FFF;
+  pointer-events: none;
+}
 
 /* Thumbnail the server couldn't render: app.js flags it. */
 .tile.is-broken .tile-btn::after {
@@ -200,7 +264,7 @@ main { position: relative; z-index: 1; }
   padding: .3rem;
   font-size: .68rem;
   text-align: center;
-  background: var(--terracotta);
+  background: var(--berry);
   color: var(--paper);
 }
 
@@ -241,7 +305,7 @@ main { position: relative; z-index: 1; }
   font-family: var(--serif);
   font-size: 3rem;
   line-height: 1;
-  color: var(--terracotta);
+  color: var(--berry);
   margin: 0 0 .25rem;
 }
 
@@ -266,7 +330,7 @@ input[type="text"], input[type="password"], input:not([type]) {
   width: 100%;
 }
 input:focus-visible {
-  outline: 2px solid var(--terracotta);
+  outline: 2px solid var(--berry);
   outline-offset: -1px;
   border-color: transparent;
 }
@@ -281,7 +345,7 @@ input:focus-visible {
   letter-spacing: 0;
   font-size: .95rem;
 }
-.filedrop:hover { border-color: var(--terracotta); color: var(--terracotta); }
+.filedrop:hover { border-color: var(--berry); color: var(--berry); }
 .filedrop input { display: block; margin: .6rem auto 0; max-width: 100%; }
 
 .btn {
@@ -289,22 +353,22 @@ input:focus-visible {
   font: inherit;
   font-size: .95rem;
   padding: .6rem 1.4rem;
-  border: 1px solid var(--terracotta);
+  border: 1px solid var(--berry);
   border-radius: 999px;
-  background: var(--terracotta);
-  color: #FFF8F0;
+  background: var(--berry);
+  color: var(--btn-ink);
   text-decoration: none;
   text-align: center;
   cursor: pointer;
   transition: background .18s ease, color .18s ease;
 }
-.btn:hover { background: color-mix(in srgb, var(--terracotta) 82%, black); color: #FFF8F0; }
+.btn:hover { background: var(--berry-deep); border-color: var(--berry-deep); color: var(--btn-ink); }
 .btn-quiet {
   background: transparent;
-  color: var(--terracotta);
+  color: var(--berry);
   border-color: var(--line);
 }
-.btn-quiet:hover { background: var(--terracotta); color: #FFF8F0; }
+.btn-quiet:hover { background: var(--berry); border-color: var(--berry); color: var(--btn-ink); }
 .btn-small { padding: .35rem .9rem; font-size: .82rem; }
 
 /* --------------------------------------------------------------- flashes */
@@ -324,7 +388,7 @@ input:focus-visible {
   border-left: 3px solid var(--sage);
   background: var(--paper-2);
 }
-.flash-error { border-left-color: var(--terracotta); }
+.flash-error { border-left-color: var(--berry); }
 
 .notice {
   margin-top: 1.4rem;
@@ -343,7 +407,7 @@ input:focus-visible {
   border: 1px solid var(--line);
   border-radius: var(--radius);
 }
-.token-label { margin: 0 0 .5rem; font-size: .82rem; color: var(--terracotta); }
+.token-label { margin: 0 0 .5rem; font-size: .82rem; color: var(--berry); }
 .token {
   display: block;
   word-break: break-all;
@@ -370,7 +434,8 @@ code { font-size: .88em; }
 }
 .lightbox::backdrop { background: rgba(18, 14, 12, .93); }
 
-.lightbox img {
+.lightbox img,
+.lightbox video {
   position: absolute;
   inset: 0;
   margin: auto;
@@ -379,19 +444,21 @@ code { font-size: .88em; }
   object-fit: contain;
   border-radius: 4px;
 }
+.lightbox img[hidden],
+.lightbox video[hidden] { display: none; }
 
 .lb-close, .lb-nav {
   position: absolute;
   z-index: 2;
   background: rgba(0, 0, 0, .35);
-  color: #F4EFE6;
+  color: var(--lb-ink);
   border: 0;
   border-radius: 999px;
   cursor: pointer;
   line-height: 1;
   transition: background .15s ease;
 }
-.lb-close:hover, .lb-nav:hover { background: var(--terracotta); }
+.lb-close:hover, .lb-nav:hover { background: var(--berry); }
 .lb-close {
   top: calc(1rem + var(--sa-top));
   right: calc(1rem + var(--sa-right));
@@ -422,8 +489,17 @@ code { font-size: .88em; }
   white-space: nowrap;
 }
 .lb-sub { font-size: .8rem; opacity: .75; }
-.lb-bar .btn { border-color: rgba(244, 239, 230, .5); background: transparent; color: #F4EFE6; }
-.lb-bar .btn:hover { background: var(--terracotta); border-color: var(--terracotta); }
+.lb-loc {
+  font-size: .8rem;
+  color: var(--lb-ink);
+  opacity: .85;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+  width: fit-content;
+}
+.lb-loc:hover { color: var(--berry); opacity: 1; }
+.lb-bar .btn { border-color: rgba(244, 239, 230, .5); background: transparent; color: var(--lb-ink); }
+.lb-bar .btn:hover { background: var(--berry); border-color: var(--berry); color: var(--btn-ink); }
 
 /* ------------------------------------------------------- selection mode */
 
@@ -444,9 +520,9 @@ code { font-size: .88em; }
   transform: scale(.9);
 }
 .grid.selecting .tile.is-selected .tile-btn {
-  outline: 3px solid var(--terracotta);
+  outline: 3px solid var(--berry);
   outline-offset: -3px;
-  background: var(--terracotta);
+  background: var(--berry);
 }
 .grid.selecting .tile.is-selected .tile-btn::before {
   content: "✓";
@@ -460,8 +536,8 @@ code { font-size: .88em; }
   place-items: center;
   font-size: .8rem;
   border-radius: 999px;
-  background: var(--terracotta);
-  color: #FFF8F0;
+  background: var(--berry);
+  color: var(--btn-ink);
 }
 
 .selbar {
@@ -499,6 +575,8 @@ body.has-selbar .wide { padding-bottom: 7rem; }
     transition-duration: .01ms !important;
     animation-duration: .01ms !important;
   }
+  .tile { animation: none; }
+  .tile-btn:hover, .tile-btn:focus-visible, .tile-btn:active { transform: none; }
   .tile-btn:hover img { transform: none; }
   .grid.selecting .tile.is-selected .tile-btn img { transform: none; }
 }

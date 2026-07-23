@@ -6,10 +6,11 @@
 <div class="card">
   <h1 class="card-title">{{ user['username'] }}</h1>
   <p class="meta">
-    {{ photo_count }} photo{{ '' if photo_count == 1 else 's' }} ·
+    {{ photo_count }} item{{ '' if photo_count == 1 else 's' }} ·
     {{ mb_used }} MB used ·
     {% if free < 0 %}storage unavailable{% else %}{{ free }} MB free on the Pi{% endif %} ·
-    HEIC {{ 'supported' if heic else 'NOT supported' }}
+    HEIC {{ 'supported' if heic else 'NOT supported' }} ·
+    video {{ 'supported' if video else 'posters need ffmpeg' }}
   </p>
 
   {% if fresh_token %}

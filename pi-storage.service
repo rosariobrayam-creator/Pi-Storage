@@ -13,6 +13,11 @@ WorkingDirectory=/home/prdx/Documents/Projects/Pi-Storage
 # start at all when config.env is absent, which it is on a fresh install.
 EnvironmentFile=-/home/prdx/Documents/Projects/Pi-Storage/config.env
 ExecStart=/home/prdx/Documents/Projects/Pi-Storage/venv/bin/python app.py
+# Large uploads are spooled to temp disk before the app sees them. If /tmp is
+# tmpfs (RAM) -- check with `findmnt /tmp` -- a 2GB video would eat RAM instead;
+# point TMPDIR somewhere disk-backed, ideally on the same drive as the photos.
+# Create the directory first: mkdir -p /home/prdx/Documents/Projects/Pi-Storage/.tmp
+#Environment=TMPDIR=/home/prdx/Documents/Projects/Pi-Storage/.tmp
 Restart=on-failure
 RestartSec=5
 

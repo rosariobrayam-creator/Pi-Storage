@@ -4,7 +4,7 @@
 
 {% block content %}
 <div class="card">
-  <h1 class="card-title">Upload photos</h1>
+  <h1 class="card-title">Upload photos &amp; videos</h1>
   <p class="meta">They'll land in your library, visible only to you.</p>
 
   <form method="post" action="{{ url_for('upload') }}"
@@ -12,8 +12,8 @@
     <input type="hidden" name="device" value="browser">
     <input type="hidden" name="redirect" value="1">
     <label class="filedrop">
-      <input type="file" name="file" accept="image/*,.heic,.heif" multiple required>
-      <span>Choose photos…</span>
+      <input type="file" name="file" accept="image/*,video/*,.heic,.heif,.mov,.mp4" multiple required>
+      <span>Choose photos or videos…</span>
     </label>
     <button class="btn" type="submit">Upload</button>
   </form>

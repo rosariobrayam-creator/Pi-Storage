@@ -16,8 +16,11 @@
 
   if (hasDialog) {
     var img = document.getElementById("lb-img");
+    var video = document.getElementById("lb-video");
     var download = document.getElementById("lb-download");
     var save = document.getElementById("lb-save");
+    var liveBtn = document.getElementById("lb-live");
+    var locLink = document.getElementById("lb-loc");
     var nameEl = dialog.querySelector(".lb-name");
     var subEl = dialog.querySelector(".lb-sub");
 
@@ -32,9 +35,19 @@
 
     // The Pi transcodes HEIC on demand, so warming the neighbours makes
     // arrow-key paging feel instant instead of showing a blank frame.
+    // Videos are skipped: speculatively pulling megabytes over Tailscale
+    // to maybe watch a clip is a bad trade.
     var preload = function (i) {
       if (i < 0 || i >= tiles.length) return;
+      if (tiles[i].dataset.type === "video") return;
       new Image().src = "/photo/" + tiles[i].dataset.id;
+    };
+
+    var stopVideo = function () {
+      video.pause();
+      // Detach the source for real -- iOS keeps the decoder alive otherwise.
+      video.removeAttribute("src");
+      video.load();
     };
 
     var show = function (i) {
@@ -42,17 +55,58 @@
       index = i;
       var t = tiles[i];
       var id = t.dataset.id;
-      img.src = "/photo/" + id;
-      img.alt = t.dataset.name || "";
+      var isVideo = t.dataset.type === "video";
+      stopVideo();
+      if (isVideo) {
+        video.src = "/media/" + id;
+        img.removeAttribute("src");
+      } else {
+        img.src = "/photo/" + id;
+      }
+      img.hidden = isVideo;
+      video.hidden = !isVideo;
+      img.alt = isVideo ? "" : (t.dataset.name || "");
       download.href = "/original/" + id;
       // inline=1 so iOS long-press offers "Add to Photos" with the real file.
       save.href = "/original/" + id + "?inline=1";
       nameEl.textContent = t.dataset.name;
-      subEl.textContent = [fmtDate(t.dataset.date), t.dataset.device, t.dataset.format]
-        .filter(Boolean).join("  ·  ");
+      // Capture details when we have them; upload date and device otherwise.
+      subEl.textContent = [
+        fmtDate(t.dataset.taken || t.dataset.date),
+        t.dataset.camera || t.dataset.device,
+        t.dataset.format
+      ].filter(Boolean).join("  ·  ");
+      if (t.dataset.lat) {
+        locLink.href = "https://maps.apple.com/?ll=" + t.dataset.lat + "," + t.dataset.lon
+          + "&q=" + encodeURIComponent(t.dataset.name || "Photo");
+        locLink.hidden = false;
+      } else {
+        locLink.hidden = true;
+      }
+      liveBtn.hidden = !t.dataset.live;
       preload(i + 1);
       preload(i - 1);
     };
+
+    // A Live Photo replays its paired clip in place of the still, then
+    // falls back to the still when it ends.
+    liveBtn.addEventListener("click", function () {
+      var t = tiles[index];
+      if (!t || !t.dataset.live) return;
+      video.src = "/media/" + t.dataset.live;
+      video.hidden = false;
+      img.hidden = true;
+      video.play();
+    });
+
+    video.addEventListener("ended", function () {
+      var t = tiles[index];
+      if (t && t.dataset.type !== "video") {  // it was a Live Photo replay
+        stopVideo();
+        video.hidden = true;
+        img.hidden = false;
+      }
+    });
 
     dialog.addEventListener("click", function (e) {
       if (e.target.hasAttribute("data-close") || e.target === dialog) dialog.close();
@@ -65,8 +119,11 @@
       else if (e.key === "ArrowLeft") { e.preventDefault(); show(index - 1); }
     });
 
-    // Free the decoded image when the lightbox closes.
-    dialog.addEventListener("close", function () { img.removeAttribute("src"); });
+    // Free the decoded image / stop playback when the lightbox closes.
+    dialog.addEventListener("close", function () {
+      img.removeAttribute("src");
+      stopVideo();
+    });
 
     var openLightbox = function (i) { show(i); dialog.showModal(); };
   }

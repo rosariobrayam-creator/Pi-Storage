@@ -11,7 +11,7 @@
     {% endif %}
   </div>
   <p class="meta">
-    {{ total }} photo{{ '' if total == 1 else 's' }} ·
+    {{ total }} item{{ '' if total == 1 else 's' }} ·
     {% if free < 0 %}storage unavailable — check the drive{% else %}{{ free }} MB free on the Pi{% endif %}
   </p>
 </div>
@@ -19,17 +19,27 @@
 {% if photos %}
 <div class="grid" id="grid">
   {% for p in photos %}
-  <figure class="tile">
+  <figure class="tile" style="--i: {{ loop.index0 % 20 }}">
     <button type="button" class="tile-btn"
             data-id="{{ p['id'] }}"
             data-name="{{ p['original_name'] or 'untitled' }}"
             data-date="{{ p['uploaded_at'] }}"
             data-device="{{ p['device'] or 'unknown device' }}"
             data-format="{{ p['format'] }}"
+            data-type="{{ p['media_type'] }}"
+            {% if p['taken_at'] %}data-taken="{{ p['taken_at'] }}"{% endif %}
+            {% if p['camera'] %}data-camera="{{ p['camera'] }}"{% endif %}
+            {% if p['latitude'] is not none %}data-lat="{{ p['latitude'] }}" data-lon="{{ p['longitude'] }}"{% endif %}
+            {% if p['live_video_id'] %}data-live="{{ p['live_video_id'] }}"{% endif %}
             aria-label="Open {{ p['original_name'] or 'photo' }}">
       <img loading="lazy" decoding="async"
            {% if p['width'] %}width="{{ p['width'] }}" height="{{ p['height'] }}"{% endif %}
            src="{{ url_for('thumb', photo_id=p['id']) }}" alt="">
+      {% if p['media_type'] == 'video' %}
+      <span class="tile-dur">▶{% if p['duration_s'] %} {{ (p['duration_s'] | int) // 60 }}:{{ '%02d' | format((p['duration_s'] | int) % 60) }}{% endif %}</span>
+      {% elif p['live_video_id'] %}
+      <span class="tile-live">◎ LIVE</span>
+      {% endif %}
     </button>
   </figure>
   {% endfor %}
@@ -53,12 +63,15 @@
   <button class="lb-nav lb-prev" data-prev aria-label="Previous">‹</button>
   <button class="lb-nav lb-next" data-next aria-label="Next">›</button>
   <img id="lb-img" alt="">
+  <video id="lb-video" controls playsinline preload="metadata" hidden></video>
   <footer class="lb-bar">
     <div class="lb-meta">
       <span class="lb-name"></span>
       <span class="lb-sub"></span>
+      <a class="lb-loc" id="lb-loc" href="#" target="_blank" rel="noopener" hidden>📍 View on map</a>
     </div>
     <div class="lb-actions">
+      <button class="btn btn-small" id="lb-live" type="button" hidden>◎ LIVE</button>
       <!-- Inline, so iOS long-press offers "Add to Photos" with the true
            original rather than the downscaled display copy. -->
       <a class="btn btn-small" id="lb-save" href="#" target="_blank"

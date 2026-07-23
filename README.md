@@ -19,7 +19,7 @@ A small Flask app for your Raspberry Pi. Your iPhone sends photos to it over HTT
 ## 1. Install on the Pi
 
 ```bash
-sudo apt update && sudo apt install -y python3-venv libheif1
+sudo apt update && sudo apt install -y python3-venv libheif1 ffmpeg
 mkdir -p ~/Documents/Projects && cd ~/Documents/Projects
 git clone <your-repo-url> Pi-Storage && cd Pi-Storage
 python3 -m venv venv
@@ -29,6 +29,8 @@ venv/bin/pip install -r requirements.txt
 `templates/` and `static/` must sit next to `app.py`. Deploying `app.py` alone will start the server but every page will 500.
 
 If `pillow-heif` fails to build (can happen on 32-bit Pi OS), try `sudo apt install libheif-dev` and retry — or remove it from requirements.txt and add a "Convert Image → JPEG" step to your Shortcut instead.
+
+`ffmpeg` is what makes video thumbnails. Without it videos still upload and play; their tiles just show a placeholder instead of a poster frame.
 
 ## 2. Configure
 
@@ -132,11 +134,29 @@ cd ~/Documents/Projects/Pi-Storage && git pull && sudo systemctl restart pi-stor
    - Request Body: **Form** → add field: type **File**, key `file`, value **Repeat Item**
    - Optional second form field: type Text, key `device`, value `iphone`
 5. Optionally add **Show Result** after the repeat.
-6. In the shortcut's settings (ⓘ), enable **Show in Share Sheet** → accepts **Images**. Now you can share any photo(s) from the Photos app straight to the Pi.
+6. In the shortcut's settings (ⓘ), enable **Show in Share Sheet** → accepts **Images** and **Media**. Now you can share any photo(s) or video(s) from the Photos app straight to the Pi.
+
+Videos (.mov/.mp4) upload the same way as photos — no extra steps. Don't add a "Convert Image" action to the shortcut: it would strip video files and re-encode HEIC originals.
 
 Once Tailscale is set up (§10), use the `https://<host>.<tailnet>.ts.net/upload` URL here instead of the LAN IP — then the Shortcut works from anywhere, not just at home.
 
 No Shortcut needed at all if you prefer Safari: open `/upload`, sign in, and pick photos there.
+
+### Clearing your phone (bulk offload)
+
+The Repeat-with-Each loop sends **one file per request**, so there's no practical limit on how much one run can move — 40GB works. What makes it safe:
+
+- **Interrupted runs resume for free.** The server recognises files it already has by content hash, so re-running the shortcut on the same selection skips everything already stored (each comes back `"duplicate"` in milliseconds) and continues where it left off.
+- **Work in batches of 100–300 items.** Shortcuts itself gets flaky with thousands of selections; several smaller runs cost nothing extra thanks to dedup.
+- **Same Wi-Fi as the Pi, phone plugged in.** Over Tailscale from outside, a big offload can crawl through a relay.
+
+To also delete from the phone as you go, add inside the repeat, after Get Contents of URL:
+
+1. **Get Dictionary from** → Contents of URL
+2. **Get Dictionary Value** → key `stored` (and another for `duplicates`)
+3. **If** stored + duplicates ≥ 1 → **Delete Photos** → Repeat Item
+
+Deleted items sit in **Recently Deleted for 30 days** — that's the real safety net. Run the first batch *without* the delete step, eyeball the gallery, then enable it. A "disk full" response has no `stored` key, so the If-gate skips the delete and nothing is lost.
 
 ## 7. Automatic upload
 
@@ -152,6 +172,16 @@ Re-sending overlapping photos is harmless — the server detects duplicates by c
 Open `http://<PI_IP>:8000/` and sign in. Newest first, click any photo for the full-size view (arrow keys page through it, Escape closes).
 
 HEIC photos display fine in any browser: the Pi transcodes a JPEG copy on the fly for viewing, while **Download original** in the lightbox still gives you the untouched `.heic` file.
+
+Videos show a poster frame with a duration badge and play right in the lightbox. One caveat: iPhones record HEVC by default, which plays fine in Safari (and most modern Chrome) but may refuse in older desktop browsers — the Pi serves the file as-is rather than melting itself trying to transcode video. **Download original** always works regardless.
+
+**Capture details.** New uploads store the date taken, GPS location and camera model, read from the photo's EXIF (or the video's QuickTime tags). The lightbox shows the capture date and camera, and "📍 View on map" opens the spot in Maps. Screenshots and re-saved images legitimately have none — those fall back to the upload date. To fill in details for everything uploaded *before* this feature existed:
+
+```bash
+venv/bin/python app.py backfill-details   # safe to re-run; skips rows already filled
+```
+
+**Live Photos.** A Live Photo is really two files — the still plus a ~3s clip. When both land in the same account with matching filenames (`IMG_1234.HEIC` + `IMG_1234.MOV`), the server pairs them automatically, in either upload order: the grid shows one tile with a ◎ LIVE badge, and the lightbox's LIVE button plays the clip. The clip stops counting as a separate library item. Note the Shortcuts app sends only the still by default; the pairing kicks in when the clip arrives by any route (the browser upload page accepts both files at once, and `backfill-details` pairs halves that are already uploaded).
 
 To pull photos back off the Pi — onto your camera roll or your PC — see [Getting photos back](#12-getting-photos-back).
 
@@ -330,8 +360,10 @@ The database migrates itself on first start; it makes a `photos.db.bak-v0` backu
 - **Everyone logged out after a restart** — `secret.key` was deleted or `SECRET_KEY` changed. Both must be stable.
 - **Broken image icons in the gallery** — check `logs/server.log`. A thumbnail the Pi can't decode serves a placeholder with an `X-Thumb-Error` header rather than failing the page. Also make sure you're browsing the live `http://<PI_IP>:8000/` URL, not a saved copy of the page — a saved `.html` resolves its image URLs against your own PC and shows nothing.
 - **401** — the token doesn't match. Issue a new one from the account page.
-- **413** — request too big; raise `MAX_UPLOAD_MB`.
+- **413 / "data value transmitted exceeds the capacity limit"** — one request was bigger than `MAX_UPLOAD_MB` (default 2048). If the Shortcut sends the whole selection in a single request, rebuild it with the Repeat-with-Each loop from §6 so each file travels alone. Note: if an old `config.env` still pins `MAX_UPLOAD_MB=200`, that value wins over the new default — raise it there.
 - **507** — Pi disk nearly full (below `MIN_FREE_MB`).
 - **HEIC rejected on upload** — `pillow-heif` isn't installed; see step 1, or convert to JPEG in the Shortcut. Sign in and open `/health` to see whether the running service has HEIC support.
+- **Video tiles show a placeholder instead of a poster** — `ffmpeg` isn't installed (`sudo apt install ffmpeg`, then restart). `/health` reports `video_support`.
+- **A video won't play in the browser but downloads fine** — it's HEVC in a browser without HEVC support; see §8.
 - **Signup says 503** — `INVITE_CODE` isn't set in `config.env`.
 - **Backups** — SD cards fail. Sync the photo folder and the database off the Pi occasionally, e.g. `rsync -a ~/Documents/Projects/Pi-Storage/photos/ ~/Documents/Projects/Pi-Storage/photos.db user@nas:/backup/` (cron it).
