@@ -64,6 +64,9 @@ html { -webkit-text-size-adjust: 100%; }
 body {
   margin: 0;
   min-height: 100vh;
+  /* clip, not hidden: kills sideways page panning without breaking the
+     sticky header the way an overflow scroll container would. */
+  overflow-x: clip;
   background: var(--paper);
   color: var(--ink);
   font-family: var(--sans);
@@ -117,14 +120,16 @@ a:hover { color: var(--ink); }
   display: inline-flex;
   align-items: center;
   gap: .55rem;
+  flex: none;   /* never squashed by a crowded nav; the nav scrolls instead */
   color: var(--ink);
   text-decoration: none;
 }
 .brand .logo { width: 30px; height: 30px; color: var(--ink); flex: none; }
 
-/* The aperture is alive: the lens slowly turns while each blade cycles the
-   colour wheel, offset so together they always read as a spectrum -- a
-   heartbeat that shows the site hasn't frozen. Leaves and ring stay inked. */
+/* The aperture is alive: the lens slowly turns while each coloured pie piece
+   cycles the colour wheel, offset so together they always read as a spectrum
+   -- a heartbeat that shows the site hasn't frozen. Same filled wedges as the
+   app icon; leaves, ring and separators stay inked. */
 .logo .lens {
   transform-box: view-box;
   transform-origin: 24px 29px;   /* the aperture centre in the 48-unit viewBox */
@@ -132,24 +137,23 @@ a:hover { color: var(--ink); }
 }
 @keyframes lens-spin { to { transform: rotate(360deg); } }
 
-.logo .blade { animation: blade-hue 9s linear infinite; }
-.logo .blade-0 { animation-delay: 0s; }
-.logo .blade-1 { animation-delay: -1.29s; }
-.logo .blade-2 { animation-delay: -2.57s; }
-.logo .blade-3 { animation-delay: -3.86s; }
-.logo .blade-4 { animation-delay: -5.14s; }
-.logo .blade-5 { animation-delay: -6.43s; }
-.logo .blade-6 { animation-delay: -7.71s; }  /* the hexagon joins the cycle */
+.logo .seg { animation: seg-hue 9s linear infinite; }
+.logo .seg-0 { animation-delay: 0s; }
+.logo .seg-1 { animation-delay: -1.29s; }
+.logo .seg-2 { animation-delay: -2.57s; }
+.logo .seg-3 { animation-delay: -3.86s; }
+.logo .seg-4 { animation-delay: -5.14s; }
+.logo .seg-5 { animation-delay: -6.43s; }
 
-@keyframes blade-hue {
-  0%      { stroke: #E0435C; }  /* raspberry */
-  14.3%   { stroke: #E8833A; }  /* orange */
-  28.6%   { stroke: #E5B93C; }  /* honey */
-  42.9%   { stroke: #7DBB6C; }  /* leaf */
-  57.1%   { stroke: #4FB8A8; }  /* teal */
-  71.4%   { stroke: #5B8DD9; }  /* sky */
-  85.7%   { stroke: #9B6BD9; }  /* violet */
-  100%    { stroke: #E0435C; }
+@keyframes seg-hue {
+  0%      { fill: #E0435C; }  /* raspberry */
+  14.3%   { fill: #E8833A; }  /* orange */
+  28.6%   { fill: #E5B93C; }  /* honey */
+  42.9%   { fill: #7DBB6C; }  /* leaf */
+  57.1%   { fill: #4FB8A8; }  /* teal */
+  71.4%   { fill: #5B8DD9; }  /* sky */
+  85.7%   { fill: #9B6BD9; }  /* violet */
+  100%    { fill: #E0435C; }
 }
 .wordmark {
   font-family: var(--serif);
@@ -159,7 +163,20 @@ a:hover { color: var(--ink); }
 }
 .wordmark .dot { color: var(--berry); }
 
-.topnav { display: flex; align-items: center; gap: clamp(.35rem, 1.5vw, .75rem); }
+/* The nav is its own sideways scroller: on a narrow phone the pills overflow
+   and you swipe through them while the brand -- and the page under it -- stay
+   put. min-width: 0 lets the flex item actually shrink; without it the whole
+   header overflows and the entire page pans instead. */
+.topnav {
+  display: flex;
+  align-items: center;
+  gap: clamp(.35rem, 1.5vw, .75rem);
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
+}
+.topnav::-webkit-scrollbar { display: none; }
 /* Nav items are buttons too: pills with the same lift-and-press as .btn. */
 .topnav a, .linkish {
   display: inline-flex;
@@ -433,13 +450,35 @@ main { position: relative; z-index: 1; }
   font-size: .8rem;
   color: var(--ink-soft);
 }
+.legend li { display: inline-flex; align-items: center; }
 .legend .dot {
   display: inline-block;
   width: .6rem;
   height: .6rem;
   border-radius: 50%;
   margin-right: .35rem;
-  vertical-align: baseline;
+  flex: none;
+}
+/* Who's who at a glance: the pfp rides next to the name. Accounts without
+   one get their initial, same as the account page but coin-sized. */
+.legend-avatar {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  object-fit: cover;
+  margin-right: .35rem;
+  flex: none;
+  border: 1px solid var(--line);
+}
+.legend-avatar-empty {
+  display: inline-grid;
+  place-items: center;
+  font-family: var(--serif);
+  font-size: .62rem;
+  font-weight: 600;
+  color: var(--btn-ink);
+  background: var(--berry);
+  user-select: none;
 }
 
 .seg-0 { background: var(--berry); }
@@ -883,6 +922,38 @@ body.has-selbar .wide { padding-bottom: 7rem; }
   80%      { transform: translate(2px, 1px) skewX(-.6deg); }
 }
 
+/* Admin only: the spray tag keeps watch from the corner of the gallery.
+   Round-clipped so its black square reads as a sticker on the light paper.
+   Tapping it opens the breach -- the touch-screen way in, since phones have
+   no keyboard to type the word on. */
+.dedsec-corner {
+  position: fixed;
+  z-index: 15;
+  right: calc(.8rem + var(--sa-right));
+  bottom: calc(.8rem + var(--sa-bottom));
+  width: 46px;
+  height: 46px;
+  border-radius: 50%;
+  border: 0;
+  padding: 0;
+  background: none;
+  overflow: hidden;
+  cursor: pointer;
+  opacity: .55;
+  filter: grayscale(.4);
+  box-shadow: 0 1px 3px var(--shadow), 0 6px 16px -8px var(--shadow);
+  transition: opacity .2s ease, transform .2s ease, filter .2s ease;
+}
+.dedsec-corner img { display: block; width: 100%; height: 100%; border-radius: 50%; }
+.dedsec-corner:hover, .dedsec-corner:focus-visible {
+  opacity: 1;
+  filter: none;
+  transform: translateY(-2px) rotate(-6deg) scale(1.08);
+}
+.dedsec-corner:active { transform: scale(.92); transition-duration: .08s; }
+/* Stay clear of the selection bar when it slides up. */
+body.has-selbar .dedsec-corner { display: none; }
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     transition-duration: .01ms !important;
@@ -895,5 +966,7 @@ body.has-selbar .wide { padding-bottom: 7rem; }
   .btn:hover, .btn:active,
   .topnav a:hover, .topnav a:active, .linkish:hover, .linkish:active,
   .lb-loc:hover, .lb-loc:active { transform: none; }
-  .logo .lens, .logo .blade { animation: none; }
+  /* The lens stops turning but keeps its colours -- reduced motion shouldn't
+     mean a colourless logo. */
+  .logo .lens, .logo .seg { animation: none; }
 }

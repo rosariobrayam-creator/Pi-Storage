@@ -636,6 +636,15 @@ def auth_required(fn):
     return wrapper
 
 
+# Computed once at startup: browsers cache app.css/app.js hard, so a deploy
+# used to leave phones running week-old script until they felt like refreshing.
+# The mtime in ?v= makes every restart-after-pull an instant cache miss.
+STATIC_VER = max(
+    int((BASE_DIR / "static" / name).stat().st_mtime)
+    for name in ("app.css", "app.js")
+)
+
+
 @app.context_processor
 def inject_user():
     ident = load_identity()
@@ -645,7 +654,7 @@ def inject_user():
         p = AVATARS_DIR / f"{ident.id}.jpg"
         if p.exists():
             ver = int(p.stat().st_mtime)
-    return {"current_user": ident, "avatar_ver": ver}
+    return {"current_user": ident, "avatar_ver": ver, "static_ver": STATIC_VER}
 
 
 # --------------------------------------------------------------- helpers
@@ -1147,7 +1156,8 @@ def account():
         # The storage meter: who is using the drive, and what your own share
         # is made of. Everyone can see the per-person split -- family server.
         by_user = conn.execute(
-            "SELECT u.username AS name, COALESCE(SUM(p.size_bytes), 0) AS bytes"
+            "SELECT u.id AS uid, u.username AS name,"
+            " COALESCE(SUM(p.size_bytes), 0) AS bytes"
             " FROM users u LEFT JOIN photos p ON p.owner_id = u.id"
             " GROUP BY u.id HAVING bytes > 0 ORDER BY bytes DESC"
         ).fetchall()
@@ -1168,9 +1178,14 @@ def account():
 
     library_total = sum(r["bytes"] for r in by_user)
     other = max(0, (disk_total - disk_free) - library_total)
+    def avatar_ver_of(uid):
+        p = AVATARS_DIR / f"{uid}.jpg"
+        return int(p.stat().st_mtime) if p.exists() else None
+
     disk_segs = [
         {"label": r["name"], "bytes": r["bytes"], "gb": gb(r["bytes"]),
-         "pct": (r["bytes"] / disk_total * 100) if disk_total else 0}
+         "pct": (r["bytes"] / disk_total * 100) if disk_total else 0,
+         "uid": r["uid"], "avatar_ver": avatar_ver_of(r["uid"])}
         for r in by_user
     ]
     disk_segs.append({"label": "System & other", "bytes": other, "gb": gb(other),

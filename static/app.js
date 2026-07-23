@@ -117,21 +117,37 @@
 
     // A Live Photo replays its paired clip in place of the still, then
     // falls back to the still when it ends.
+    var backToStill = function () {
+      stopVideo();
+      video.hidden = true;
+      img.hidden = false;
+    };
+
     liveBtn.addEventListener("click", function () {
       var t = tiles[index];
       if (!t || !t.dataset.live) return;
       video.src = "/media/" + t.dataset.live;
       video.hidden = false;
       img.hidden = true;
-      video.play();
+      var p = video.play();
+      if (p && p.catch) p.catch(function () {});  // the error handler reports it
     });
 
     video.addEventListener("ended", function () {
       var t = tiles[index];
-      if (t && t.dataset.type !== "video") {  // it was a Live Photo replay
-        stopVideo();
-        video.hidden = true;
-        img.hidden = false;
+      if (t && t.dataset.type !== "video") backToStill();  // Live replay over
+    });
+
+    // A clip that can't decode here (iPhone HEVC in a browser without HEVC
+    // support, typically) would otherwise just sit black and silent -- put the
+    // still back and say why instead.
+    video.addEventListener("error", function () {
+      if (!video.getAttribute("src")) return;  // fired by stopVideo() detaching
+      var t = tiles[index];
+      if (t && t.dataset.type !== "video") {
+        backToStill();
+        subEl.textContent =
+          "Live clip can't play in this browser (HEVC) — try Safari, or the phone.";
       }
     });
 
@@ -293,27 +309,20 @@
   });
 
   /* -------------------------------------------------- a little easter egg */
-  // Wrench would approve of the self-hosting. Type it in the gallery.
-
-  console.log("%c" + [
-    "      _.-\"\"-._",
-    "     /  _  _  \\",
-    "    |  (o)(o)  |     WE ARE DEDSEC.",
-    "    |   /__\\   |     nice server. no cloud, no data brokers.",
-    "     \\  \\/\\/  /      we do not judge the 6,000 screenshots.",
-    "      '-.__.-'       (you know the word. type it in the gallery.)",
-  ].join("\n"), "color:#27E67A; font-family:monospace; font-size:12px;");
+  // Wrench would approve of the self-hosting. Admin only: everyone else's
+  // gallery stays perfectly serious. Type the word, or tap the corner tag.
 
   (function () {
-    var buf = "";
-    document.addEventListener("keydown", function (e) {
-      var t = e.target;
-      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA"
-                || t.tagName === "SELECT")) return;
-      if (!e.key || e.key.length !== 1) return;
-      buf = (buf + e.key.toLowerCase()).slice(-6);
-      if (buf === "dedsec") { buf = ""; breach(); }
-    });
+    if (document.body.dataset.admin !== "1") return;
+
+    console.log("%c" + [
+      "      _.-\"\"-._",
+      "     /  _  _  \\",
+      "    |  (o)(o)  |     WE ARE DEDSEC.",
+      "    |   /__\\   |     nice server. no cloud, no data brokers.",
+      "     \\  \\/\\/  /      we do not judge the 6,000 screenshots.",
+      "      '-.__.-'       (you know the word. type it in the gallery.)",
+    ].join("\n"), "color:#27E67A; font-family:monospace; font-size:12px;");
 
     function breach() {
       if (document.querySelector(".dedsec")) return;
@@ -339,6 +348,26 @@
       document.body.appendChild(el);
       setTimeout(close, 12000);
     }
+
+    var buf = "";
+    document.addEventListener("keydown", function (e) {
+      var t = e.target;
+      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA"
+                || t.tagName === "SELECT")) return;
+      if (!e.key || e.key.length !== 1) return;
+      buf = (buf + e.key.toLowerCase()).slice(-6);
+      if (buf === "dedsec") { buf = ""; breach(); }
+    });
+
+    // The spray tag in the corner -- and the way in from a phone, where
+    // there's no keyboard to type the word on.
+    var tag = document.createElement("button");
+    tag.type = "button";
+    tag.className = "dedsec-corner";
+    tag.setAttribute("aria-label", "ded_sec");
+    tag.innerHTML = '<img src="/static/dedsec.webp" alt="">';
+    tag.addEventListener("click", breach);
+    document.body.appendChild(tag);
   })();
 
   /* --------------------------------------------------- broken thumbnails */

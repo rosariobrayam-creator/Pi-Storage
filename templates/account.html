@@ -32,6 +32,14 @@
     <ul class="legend">
       {% for s in disk_segs %}
       <li><span class="dot {{ 'seg-muted' if s.get('muted') else 'seg-' ~ (loop.index0 % 6) }}"></span>
+        {%- if s.get('uid') %}
+        {%- if s['avatar_ver'] %}
+        <img class="legend-avatar" alt=""
+             src="{{ url_for('avatar', user_id=s['uid']) }}?v={{ s['avatar_ver'] }}">
+        {%- else %}
+        <span class="legend-avatar legend-avatar-empty">{{ s['label'][0] | upper }}</span>
+        {%- endif %}
+        {%- endif %}
         {{ s['label'] }} · {{ s['gb'] }} GB</li>
       {% endfor %}
       <li><span class="dot seg-free"></span>Free · {{ disk_free_gb }} GB</li>

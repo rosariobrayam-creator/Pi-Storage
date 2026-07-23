@@ -9,7 +9,7 @@
 <meta name="theme-color" content="#F4EFE6" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#1A1614" media="(prefers-color-scheme: dark)">
 <title>{% block title %}Pi-Storage{% endblock %}</title>
-<link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}?v={{ static_ver }}">
 <link rel="icon" href="{{ url_for('static', filename='icon.svg') }}" type="image/svg+xml">
 
 <!-- Home screen app. iOS ignores SVG icons and the manifest's display mode,
@@ -21,7 +21,7 @@
 <meta name="apple-mobile-web-app-title" content="Pi-Storage">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
 </head>
-<body class="{% block body_class %}{% endblock %}">
+<body class="{% block body_class %}{% endblock %}"{% if current_user and current_user.is_admin %} data-admin="1"{% endif %}>
 
 <header class="topbar">
   <a class="brand" href="{{ url_for('gallery') }}">

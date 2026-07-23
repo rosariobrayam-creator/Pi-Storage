@@ -128,5 +128,5 @@
 {% endblock %}
 
 {% block scripts %}
-<script src="{{ url_for('static', filename='app.js') }}" defer></script>
+<script src="{{ url_for('static', filename='app.js') }}?v={{ static_ver }}" defer></script>
 {% endblock %}
