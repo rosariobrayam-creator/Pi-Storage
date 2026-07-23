@@ -4,7 +4,15 @@
 
 {% block content %}
 <div class="card">
-  <h1 class="card-title">{{ user['username'] }}</h1>
+  <div class="account-head">
+    {% if avatar_ver %}
+    <img class="account-avatar" alt="Profile picture"
+         src="{{ url_for('avatar', user_id=user['id']) }}?v={{ avatar_ver }}">
+    {% else %}
+    <span class="account-avatar account-avatar-empty">{{ user['username'][0] | upper }}</span>
+    {% endif %}
+    <h1 class="card-title">{{ user['username'] }}</h1>
+  </div>
   <p class="meta">
     {{ photo_count }} item{{ '' if photo_count == 1 else 's' }} ·
     {{ mb_used }} MB used ·
@@ -12,6 +20,37 @@
     HEIC {{ 'supported' if heic else 'NOT supported' }} ·
     video {{ 'supported' if video else 'posters need ffmpeg' }}
   </p>
+
+  <div class="storage">
+    <p class="storage-title">Storage · {{ disk_total_gb }} GB drive</p>
+    <div class="meter">
+      {% for s in disk_segs %}
+      <span class="meter-seg {{ 'seg-muted' if s.get('muted') else 'seg-' ~ (loop.index0 % 6) }}"
+            style="width: {{ '%.2f' | format(s['pct']) }}%"></span>
+      {% endfor %}
+    </div>
+    <ul class="legend">
+      {% for s in disk_segs %}
+      <li><span class="dot {{ 'seg-muted' if s.get('muted') else 'seg-' ~ (loop.index0 % 6) }}"></span>
+        {{ s['label'] }} · {{ s['gb'] }} GB</li>
+      {% endfor %}
+      <li><span class="dot seg-free"></span>Free · {{ disk_free_gb }} GB</li>
+    </ul>
+
+    {% if my_segs %}
+    <p class="storage-title">Your library · {{ my_total_gb }} GB</p>
+    <div class="meter">
+      {% for s in my_segs %}
+      <span class="meter-seg seg-{{ loop.index0 % 6 }}" style="width: {{ '%.2f' | format(s['pct']) }}%"></span>
+      {% endfor %}
+    </div>
+    <ul class="legend">
+      {% for s in my_segs %}
+      <li><span class="dot seg-{{ loop.index0 % 6 }}"></span>{{ s['label'] }} · {{ s['gb'] }} GB</li>
+      {% endfor %}
+    </ul>
+    {% endif %}
+  </div>
 
   {% if fresh_token %}
   <div class="token-box">
@@ -28,6 +67,15 @@
     Rotate it below to get a new one.
   </p>
   {% endif %}
+
+  <form method="post" action="{{ url_for('account_avatar') }}"
+        enctype="multipart/form-data" class="stack">
+    <label class="filedrop">
+      <input type="file" name="avatar" accept="image/*,.heic,.heif" required>
+      <span>{{ 'Change' if avatar_ver else 'Add' }} profile picture…</span>
+    </label>
+    <button class="btn btn-quiet" type="submit">Save picture</button>
+  </form>
 
   <form method="post" action="{{ url_for('account_rotate') }}" class="stack">
     <button class="btn btn-quiet" type="submit">

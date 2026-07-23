@@ -171,6 +171,10 @@ Re-sending overlapping photos is harmless — the server detects duplicates by c
 
 Open `http://<PI_IP>:8000/` and sign in. Newest first, click any photo for the full-size view (arrow keys page through it, Escape closes).
 
+**Favorites & albums.** The ♥ button in the lightbox favorites a photo; the shelf pills under the title switch between All photos, Favorites, and your albums. To build an album: **Select** → pick photos → "Add to album…" in the bottom bar (choose one or create a new one right there). Inside an album, the same bar offers "Remove from album", and "Delete album" removes the album without touching the photos in it. Albums and favorites are per-account, like everything else.
+
+**Storage meter.** The account page shows a phone-style storage bar: who's using how much of the drive, plus a breakdown of your own library into photos and videos.
+
 HEIC photos display fine in any browser: the Pi transcodes a JPEG copy on the fly for viewing, while **Download original** in the lightbox still gives you the untouched `.heic` file.
 
 Videos show a poster frame with a duration badge and play right in the lightbox. One caveat: iPhones record HEVC by default, which plays fine in Safari (and most modern Chrome) but may refuse in older desktop browsers — the Pi serves the file as-is rather than melting itself trying to transcode video. **Download original** always works regardless.
@@ -181,7 +185,17 @@ Videos show a poster frame with a duration badge and play right in the lightbox.
 venv/bin/python app.py backfill-details   # safe to re-run; skips rows already filled
 ```
 
-**Live Photos.** A Live Photo is really two files — the still plus a ~3s clip. When both land in the same account with matching filenames (`IMG_1234.HEIC` + `IMG_1234.MOV`), the server pairs them automatically, in either upload order: the grid shows one tile with a ◎ LIVE badge, and the lightbox's LIVE button plays the clip. The clip stops counting as a separate library item. Note the Shortcuts app sends only the still by default; the pairing kicks in when the clip arrives by any route (the browser upload page accepts both files at once, and `backfill-details` pairs halves that are already uploaded).
+**Live Photos.** A Live Photo is really two files — the still plus a ~3s clip. When both land in the same account with matching filenames (`IMG_1234.HEIC` + `IMG_1234.MOV`), the server pairs them automatically, in either upload order: the grid shows one tile with a ◎ LIVE badge, and the lightbox's LIVE button plays the clip. The clip stops counting as a separate library item.
+
+**The Shortcut sends only the still half by default** — so a Live Photo uploaded that way has no clip to pair and no LIVE badge. To send both halves, add this inside the Shortcut's Repeat loop, after the normal upload:
+
+1. **If** → *Media Type* of Repeat Item *is* Live Photo (use **Get Details of Images** → "Is a Live Photo" if your iOS version words it that way)
+2. **Encode Media** → Repeat Item — encoding a Live Photo produces its video clip
+3. **Set Name** → rename the encoded file to the **Name** of Repeat Item (keeps the `IMG_1234` stem, which is what the server matches on)
+4. A second **Get Contents of URL** — identical POST, but the file field's value is the renamed encoded file
+5. **End If**
+
+The clip must stay under ~6 seconds to be treated as a Live half (real Live clips are ~3s, so this is automatic). Halves that arrived at different times are paired retroactively by `venv/bin/python app.py backfill-details`, and the browser `/upload` page accepts both files in one go.
 
 To pull photos back off the Pi — onto your camera roll or your PC — see [Getting photos back](#12-getting-photos-back).
 

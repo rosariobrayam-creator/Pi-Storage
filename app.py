@@ -79,6 +79,7 @@ BASE_DIR = Path(__file__).resolve().parent
 PHOTOS_DIR = Path(os.environ.get("PHOTOS_DIR", BASE_DIR / "photos"))
 THUMBS_DIR = Path(os.environ.get("THUMBS_DIR", PHOTOS_DIR / ".thumbs"))
 DISPLAY_DIR = Path(os.environ.get("DISPLAY_DIR", PHOTOS_DIR / ".display"))
+AVATARS_DIR = Path(os.environ.get("AVATARS_DIR", PHOTOS_DIR / ".avatars"))
 DB_PATH = Path(os.environ.get("DB_PATH", BASE_DIR / "photos.db"))
 LOG_DIR = Path(os.environ.get("LOG_DIR", BASE_DIR / "logs"))
 SECRET_KEY_PATH = Path(os.environ.get("SECRET_KEY_PATH", BASE_DIR / "secret.key"))
@@ -240,7 +241,7 @@ CREATE TABLE IF NOT EXISTS users (
 )
 """
 
-SCHEMA_PHOTOS_V4 = """
+SCHEMA_PHOTOS_V5 = """
 CREATE TABLE {name} (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     owner_id      INTEGER NOT NULL REFERENCES users(id),
@@ -258,9 +259,29 @@ CREATE TABLE {name} (
     longitude     REAL,
     camera        TEXT,
     live_video_id INTEGER REFERENCES photos(id),
+    favorite      INTEGER NOT NULL DEFAULT 0,
     device        TEXT,
     uploaded_at   TEXT NOT NULL,
     UNIQUE(owner_id, sha256)
+)
+"""
+
+SCHEMA_ALBUMS = """
+CREATE TABLE IF NOT EXISTS albums (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner_id   INTEGER NOT NULL REFERENCES users(id),
+    name       TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(owner_id, name)
+)
+"""
+
+SCHEMA_ALBUM_PHOTOS = """
+CREATE TABLE IF NOT EXISTS album_photos (
+    album_id INTEGER NOT NULL REFERENCES albums(id),
+    photo_id INTEGER NOT NULL REFERENCES photos(id),
+    added_at TEXT NOT NULL,
+    UNIQUE(album_id, photo_id)
 )
 """
 
@@ -271,10 +292,12 @@ def init_db() -> None:
         conn.execute(SCHEMA_USERS)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_users_token ON users(token_sha256)")
         if not _table_exists(conn, "photos"):
-            conn.execute(SCHEMA_PHOTOS_V4.format(name="photos"))
+            conn.execute(SCHEMA_PHOTOS_V5.format(name="photos"))
             conn.execute("CREATE TABLE IF NOT EXISTS schema_version (version INTEGER)")
             conn.execute("DELETE FROM schema_version")
-            conn.execute("INSERT INTO schema_version (version) VALUES (4)")
+            conn.execute("INSERT INTO schema_version (version) VALUES (5)")
+        conn.execute(SCHEMA_ALBUMS)
+        conn.execute(SCHEMA_ALBUM_PHOTOS)
 
 
 def _current_version(conn) -> int:
@@ -305,7 +328,7 @@ def migrate() -> None:
     with db() as conn:
         version = _current_version(conn)
 
-    if version >= 4:
+    if version >= 5:
         return
 
     _backup_db(version)
@@ -353,7 +376,7 @@ def migrate() -> None:
         try:
             conn.execute("PRAGMA foreign_keys=OFF")
             conn.execute("BEGIN")
-            conn.execute(SCHEMA_PHOTOS_V4.format(name="photos_new"))
+            conn.execute(SCHEMA_PHOTOS_V5.format(name="photos_new"))
             conn.execute(
                 "INSERT INTO photos_new (id, owner_id, sha256, original_name,"
                 " stored_path, format, size_bytes, width, height, device, uploaded_at)"
@@ -410,6 +433,20 @@ def migrate() -> None:
                     conn.execute(f"ALTER TABLE photos ADD COLUMN {col} {decl}")
             conn.execute("DELETE FROM schema_version")
             conn.execute("INSERT INTO schema_version (version) VALUES (4)")
+        version = 4
+
+    if version == 4:
+        log.info("migrating database v4 -> v5")
+        # v5 adds favorites and albums. Additive as always.
+        with db() as conn:
+            if not _has_column(conn, "photos", "favorite"):
+                conn.execute(
+                    "ALTER TABLE photos ADD COLUMN favorite INTEGER NOT NULL DEFAULT 0"
+                )
+            conn.execute(SCHEMA_ALBUMS)
+            conn.execute(SCHEMA_ALBUM_PHOTOS)
+            conn.execute("DELETE FROM schema_version")
+            conn.execute("INSERT INTO schema_version (version) VALUES (5)")
 
 
 def get_photo_row(photo_id: int, owner_id: int):
@@ -601,7 +638,14 @@ def auth_required(fn):
 
 @app.context_processor
 def inject_user():
-    return {"current_user": load_identity()}
+    ident = load_identity()
+    # mtime doubles as a cache-buster so a fresh avatar shows immediately.
+    ver = None
+    if ident is not None:
+        p = AVATARS_DIR / f"{ident.id}.jpg"
+        if p.exists():
+            ver = int(p.stat().st_mtime)
+    return {"current_user": ident, "avatar_ver": ver}
 
 
 # --------------------------------------------------------------- helpers
@@ -1100,6 +1144,46 @@ def account():
             "SELECT COALESCE(SUM(size_bytes), 0) AS b FROM photos WHERE owner_id = ?",
             (me.id,),
         ).fetchone()["b"]
+        # The storage meter: who is using the drive, and what your own share
+        # is made of. Everyone can see the per-person split -- family server.
+        by_user = conn.execute(
+            "SELECT u.username AS name, COALESCE(SUM(p.size_bytes), 0) AS bytes"
+            " FROM users u LEFT JOIN photos p ON p.owner_id = u.id"
+            " GROUP BY u.id HAVING bytes > 0 ORDER BY bytes DESC"
+        ).fetchall()
+        by_type = conn.execute(
+            "SELECT media_type, COALESCE(SUM(size_bytes), 0) AS bytes"
+            " FROM photos WHERE owner_id = ? GROUP BY media_type",
+            (me.id,),
+        ).fetchall()
+
+    try:
+        du = shutil.disk_usage(PHOTOS_DIR)
+        disk_total, disk_free = du.total, du.free
+    except OSError:
+        disk_total = disk_free = 0
+
+    def gb(n):  # one decimal reads like a phone's storage screen
+        return round(n / (1024 ** 3), 1)
+
+    library_total = sum(r["bytes"] for r in by_user)
+    other = max(0, (disk_total - disk_free) - library_total)
+    disk_segs = [
+        {"label": r["name"], "bytes": r["bytes"], "gb": gb(r["bytes"]),
+         "pct": (r["bytes"] / disk_total * 100) if disk_total else 0}
+        for r in by_user
+    ]
+    disk_segs.append({"label": "System & other", "bytes": other, "gb": gb(other),
+                      "pct": (other / disk_total * 100) if disk_total else 0,
+                      "muted": True})
+    type_label = {"photo": "Photos", "video": "Videos"}
+    my_segs = [
+        {"label": type_label.get(r["media_type"], r["media_type"]),
+         "bytes": r["bytes"], "gb": gb(r["bytes"]),
+         "pct": (r["bytes"] / bytes_used * 100) if bytes_used else 0}
+        for r in sorted(by_type, key=lambda r: -r["bytes"])
+    ]
+
     return render_template(
         "account.html",
         user=row,
@@ -1110,7 +1194,56 @@ def account():
         video=VIDEO_SUPPORT,
         fresh_token=session.pop("fresh_token", None),
         legacy_key_on=ALLOW_LEGACY_KEY and bool(API_KEY),
+        disk_segs=disk_segs,
+        disk_total_gb=gb(disk_total),
+        disk_free_gb=gb(disk_free),
+        my_segs=my_segs,
+        my_total_gb=gb(bytes_used),
     )
+
+
+@app.get("/avatar/<int:user_id>")
+@login_required
+def avatar(user_id: int):
+    """Profile pictures. Any signed-in account may see any avatar -- they
+    appear in shared chrome, and this is a family server."""
+    path = AVATARS_DIR / f"{user_id}.jpg"
+    if not path.exists():
+        abort(404)
+    return cached_image(path)
+
+
+@app.post("/account/avatar")
+@login_required
+def account_avatar():
+    f = request.files.get("avatar")
+    if f is None or not f.filename:
+        flash("Choose an image first.", "error")
+        return redirect(url_for("account"))
+    AVATARS_DIR.mkdir(parents=True, exist_ok=True)
+    dest = AVATARS_DIR / f"{g.identity.id}.jpg"
+    raw = AVATARS_DIR / f".{g.identity.id}.raw.{os.getpid()}.tmp"
+    out = AVATARS_DIR / f".{g.identity.id}.out.{os.getpid()}.tmp.jpg"
+    try:
+        f.save(raw)
+        if identify_image(raw) is None:
+            flash("That doesn't look like an image the server can read.", "error")
+            return redirect(url_for("account"))
+        with Image.open(raw) as im:
+            im = ImageOps.exif_transpose(im)
+            # Centre-crop to a square so circles never squash faces.
+            im = ImageOps.fit(im.convert("RGB"), (256, 256))
+            im.save(out, "JPEG", quality=85, optimize=True)
+        os.replace(out, dest)
+    except Exception:
+        log.exception("avatar upload failed for user %d", g.identity.id)
+        flash("Couldn't process that image; try a different one.", "error")
+        return redirect(url_for("account"))
+    finally:
+        raw.unlink(missing_ok=True)
+        Path(out).unlink(missing_ok=True)
+    flash("Profile picture updated.", "ok")
+    return redirect(url_for("account"))
 
 
 @app.post("/account/rotate-token")
@@ -1170,23 +1303,51 @@ def gallery():
     me = g.identity
     page = max(1, request.args.get("page", type=int) or 1)
     offset = (page - 1) * PAGE_SIZE
+
+    # Which shelf of the library: everything, favorites, or one album.
+    view = "favorites" if request.args.get("view") == "favorites" else "all"
+    album = None
+    album_id = request.args.get("album", type=int)
+
     # A Live Photo's clip is part of its still, not a separate item -- keep it
     # out of the grid and the count.
-    not_live_clip = (
-        " AND id NOT IN (SELECT live_video_id FROM photos"
-        "                WHERE owner_id = ? AND live_video_id IS NOT NULL)"
+    where = (
+        "p.owner_id = ? AND p.id NOT IN (SELECT live_video_id FROM photos"
+        " WHERE owner_id = ? AND live_video_id IS NOT NULL)"
     )
+    args = [me.id, me.id]
+    joins = ""
+    if album_id is not None:
+        with db() as conn:
+            album = conn.execute(
+                "SELECT * FROM albums WHERE id = ? AND owner_id = ?",
+                (album_id, me.id),
+            ).fetchone()
+        if album is None:
+            abort(404)
+        view = "album"
+        joins = " JOIN album_photos ap ON ap.photo_id = p.id AND ap.album_id = ?"
+        args.insert(0, album_id)
+    elif view == "favorites":
+        where += " AND p.favorite = 1"
+
     with db() as conn:
+        albums = conn.execute(
+            "SELECT a.*, COUNT(ap.photo_id) AS n FROM albums a"
+            " LEFT JOIN album_photos ap ON ap.album_id = a.id"
+            " WHERE a.owner_id = ? GROUP BY a.id ORDER BY a.name COLLATE NOCASE",
+            (me.id,),
+        ).fetchall()
         total = conn.execute(
-            "SELECT COUNT(*) AS c FROM photos WHERE owner_id = ?" + not_live_clip,
-            (me.id, me.id),
+            f"SELECT COUNT(*) AS c FROM photos p{joins} WHERE {where}", args
         ).fetchone()["c"]
         rows = conn.execute(
-            "SELECT id, original_name, uploaded_at, device, width, height, format,"
-            " media_type, duration_s, taken_at, latitude, longitude, camera,"
-            " live_video_id, size_bytes FROM photos WHERE owner_id = ?" + not_live_clip +
-            " ORDER BY id DESC LIMIT ? OFFSET ?",
-            (me.id, me.id, PAGE_SIZE, offset),
+            f"SELECT p.id, p.original_name, p.uploaded_at, p.device, p.width,"
+            f" p.height, p.format, p.media_type, p.duration_s, p.taken_at,"
+            f" p.latitude, p.longitude, p.camera, p.live_video_id, p.favorite,"
+            f" p.size_bytes FROM photos p{joins} WHERE {where}"
+            f" ORDER BY p.id DESC LIMIT ? OFFSET ?",
+            args + [PAGE_SIZE, offset],
         ).fetchall()
     return render_template(
         "gallery.html",
@@ -1195,6 +1356,9 @@ def gallery():
         page=page,
         has_next=offset + len(rows) < total,
         free=free_mb(PHOTOS_DIR),
+        view=view,
+        album=album,
+        albums=[dict(a) for a in albums],
     )
 
 
@@ -1292,6 +1456,131 @@ def original(photo_id: int):
     return resp
 
 
+# ------------------------------------------------------ favorites & albums
+
+
+def _ids_from_form() -> list[int]:
+    try:
+        ids = [int(x) for x in (request.form.get("ids") or "").split(",") if x.strip()]
+    except ValueError:
+        abort(400, description="ids must be a comma-separated list of numbers.")
+    if not ids or len(ids) > MAX_EXPORT_FILES:
+        abort(400, description="Send between 1 and 500 ids.")
+    return ids
+
+
+@app.post("/photo/<int:photo_id>/favorite")
+@auth_required
+def favorite_toggle(photo_id: int):
+    with db() as conn:
+        row = conn.execute(
+            "SELECT favorite FROM photos WHERE id = ? AND owner_id = ?",
+            (photo_id, g.identity.id),
+        ).fetchone()
+        if row is None:
+            abort(404)
+        new = 0 if row["favorite"] else 1
+        conn.execute("UPDATE photos SET favorite = ? WHERE id = ?", (new, photo_id))
+    return jsonify({"id": photo_id, "favorite": bool(new)})
+
+
+@app.post("/photos/favorite")
+@auth_required
+def favorite_bulk():
+    ids = _ids_from_form()
+    on = 1 if request.form.get("on") == "1" else 0
+    with db() as conn:
+        cur = conn.execute(
+            f"UPDATE photos SET favorite = ? WHERE owner_id = ?"
+            f" AND id IN ({','.join('?' * len(ids))})",
+            [on, g.identity.id] + ids,
+        )
+    return jsonify({"updated": cur.rowcount, "favorite": bool(on)})
+
+
+@app.post("/albums/add")
+@auth_required
+def album_add():
+    """Add photos to an album, creating it first if a new name was given."""
+    ids = _ids_from_form()
+    name = (request.form.get("new_name") or "").strip()
+    album_id = request.form.get("album_id", type=int)
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    with db() as conn:
+        if album_id is None:
+            if not name or len(name) > 40:
+                abort(400, description="Album names run 1-40 characters.")
+            row = conn.execute(
+                "SELECT id FROM albums WHERE owner_id = ? AND name = ?",
+                (g.identity.id, name),
+            ).fetchone()
+            if row:
+                album_id = row["id"]
+            else:
+                album_id = conn.execute(
+                    "INSERT INTO albums (owner_id, name, created_at) VALUES (?, ?, ?)",
+                    (g.identity.id, name, now),
+                ).lastrowid
+        else:
+            row = conn.execute(
+                "SELECT id FROM albums WHERE id = ? AND owner_id = ?",
+                (album_id, g.identity.id),
+            ).fetchone()
+            if row is None:
+                abort(404)
+        # Only the caller's own photos can enter their album.
+        owned = [r["id"] for r in conn.execute(
+            f"SELECT id FROM photos WHERE owner_id = ?"
+            f" AND id IN ({','.join('?' * len(ids))})",
+            [g.identity.id] + ids,
+        )]
+        added = 0
+        for pid in owned:
+            cur = conn.execute(
+                "INSERT OR IGNORE INTO album_photos (album_id, photo_id, added_at)"
+                " VALUES (?, ?, ?)",
+                (album_id, pid, now),
+            )
+            added += cur.rowcount
+    return jsonify({"album_id": album_id, "added": added})
+
+
+@app.post("/albums/<int:album_id>/remove")
+@auth_required
+def album_remove(album_id: int):
+    ids = _ids_from_form()
+    with db() as conn:
+        row = conn.execute(
+            "SELECT id FROM albums WHERE id = ? AND owner_id = ?",
+            (album_id, g.identity.id),
+        ).fetchone()
+        if row is None:
+            abort(404)
+        cur = conn.execute(
+            f"DELETE FROM album_photos WHERE album_id = ?"
+            f" AND photo_id IN ({','.join('?' * len(ids))})",
+            [album_id] + ids,
+        )
+    return jsonify({"removed": cur.rowcount})
+
+
+@app.post("/albums/<int:album_id>/delete")
+@login_required
+def album_delete(album_id: int):
+    """Delete the album itself. The photos in it are untouched."""
+    with db() as conn:
+        row = conn.execute(
+            "SELECT name FROM albums WHERE id = ? AND owner_id = ?",
+            (album_id, g.identity.id),
+        ).fetchone()
+        if row is None:
+            abort(404)
+        conn.execute("DELETE FROM album_photos WHERE album_id = ?", (album_id,))
+        conn.execute("DELETE FROM albums WHERE id = ?", (album_id,))
+    flash(f"Album “{row['name']}” deleted. Its photos are still in your library.", "ok")
+    return redirect(url_for("gallery"))
+
+
 def photo_json(row) -> dict:
     """Shape one photo for the API. URLs are absolute so Shortcuts can use them."""
     return {
@@ -1310,6 +1599,7 @@ def photo_json(row) -> dict:
         "longitude": row["longitude"],
         "camera": row["camera"],
         "live_video_id": row["live_video_id"],
+        "favorite": bool(row["favorite"]),
         "thumb_url": url_for("thumb", photo_id=row["id"], _external=True),
         "display_url": url_for(
             "media" if row["media_type"] == "video" else "photo",

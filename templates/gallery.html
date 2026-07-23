@@ -5,11 +5,28 @@
 {% block content %}
 <div class="page-head">
   <div class="page-head-row">
-    <h1>Library</h1>
-    {% if photos %}
-    <button type="button" class="btn btn-quiet btn-small" id="select-toggle">Select</button>
-    {% endif %}
+    <h1>{% if view == 'album' %}{{ album['name'] }}{% elif view == 'favorites' %}Favorites{% else %}Library{% endif %}</h1>
+    <div class="page-head-actions">
+      {% if view == 'album' %}
+      <form method="post" action="{{ url_for('album_delete', album_id=album['id']) }}">
+        <button type="submit" class="btn btn-quiet btn-small">Delete album</button>
+      </form>
+      {% endif %}
+      {% if photos %}
+      <button type="button" class="btn btn-quiet btn-small" id="select-toggle">Select</button>
+      {% endif %}
+    </div>
   </div>
+
+  <nav class="views">
+    <a class="view-pill {{ 'is-active' if view == 'all' }}" href="{{ url_for('gallery') }}">All photos</a>
+    <a class="view-pill {{ 'is-active' if view == 'favorites' }}" href="{{ url_for('gallery', view='favorites') }}">♥ Favorites</a>
+    {% for a in albums %}
+    <a class="view-pill {{ 'is-active' if view == 'album' and album['id'] == a['id'] }}"
+       href="{{ url_for('gallery', album=a['id']) }}">{{ a['name'] }} <span class="view-n">{{ a['n'] }}</span></a>
+    {% endfor %}
+  </nav>
+
   <p class="meta">
     {{ total }} item{{ '' if total == 1 else 's' }} ·
     {% if free < 0 %}storage unavailable — check the drive{% else %}{{ free }} MB free on the Pi{% endif %}
@@ -19,7 +36,7 @@
 {% if photos %}
 <div class="grid" id="grid">
   {% for p in photos %}
-  <figure class="tile" style="--i: {{ loop.index0 % 20 }}">
+  <figure class="tile {{ 'is-fav' if p['favorite'] }}" style="--i: {{ loop.index0 % 20 }}">
     <button type="button" class="tile-btn"
             data-id="{{ p['id'] }}"
             data-name="{{ p['original_name'] or 'untitled' }}"
@@ -31,6 +48,7 @@
             {% if p['camera'] %}data-camera="{{ p['camera'] }}"{% endif %}
             {% if p['latitude'] is not none %}data-lat="{{ p['latitude'] }}" data-lon="{{ p['longitude'] }}"{% endif %}
             {% if p['live_video_id'] %}data-live="{{ p['live_video_id'] }}"{% endif %}
+            data-fav="{{ 1 if p['favorite'] else 0 }}"
             aria-label="Open {{ p['original_name'] or 'photo' }}">
       <img loading="lazy" decoding="async"
            {% if p['width'] %}width="{{ p['width'] }}" height="{{ p['height'] }}"{% endif %}
@@ -40,14 +58,16 @@
       {% elif p['live_video_id'] %}
       <span class="tile-live">◎ LIVE</span>
       {% endif %}
+      <span class="tile-fav" aria-hidden="true">♥</span>
     </button>
   </figure>
   {% endfor %}
 </div>
 
+{% set pager_args = {'album': album['id']} if view == 'album' else ({'view': 'favorites'} if view == 'favorites' else {}) %}
 <nav class="pager">
-  {% if page > 1 %}<a href="{{ url_for('gallery', page=page-1) }}">← Newer</a>{% endif %}
-  {% if has_next %}<a href="{{ url_for('gallery', page=page+1) }}">Older →</a>{% endif %}
+  {% if page > 1 %}<a href="{{ url_for('gallery', page=page-1, **pager_args) }}">← Newer</a>{% endif %}
+  {% if has_next %}<a href="{{ url_for('gallery', page=page+1, **pager_args) }}">Older →</a>{% endif %}
 </nav>
 {% else %}
 <div class="empty">
@@ -62,15 +82,19 @@
   <button class="lb-close" data-close aria-label="Close">×</button>
   <button class="lb-nav lb-prev" data-prev aria-label="Previous">‹</button>
   <button class="lb-nav lb-next" data-next aria-label="Next">›</button>
-  <img id="lb-img" alt="">
-  <video id="lb-video" controls playsinline preload="metadata" hidden></video>
-  <footer class="lb-bar">
+  <header class="lb-top">
     <div class="lb-meta">
       <span class="lb-name"></span>
       <span class="lb-sub"></span>
       <a class="lb-loc" id="lb-loc" href="#" target="_blank" rel="noopener" hidden>📍 View on map</a>
     </div>
+  </header>
+  <img id="lb-img" alt="">
+  <video id="lb-video" controls playsinline preload="metadata" hidden></video>
+  <footer class="lb-bar">
     <div class="lb-actions">
+      <button class="btn btn-small lb-fav" id="lb-fav" type="button"
+              aria-label="Favorite">♥</button>
       <button class="btn btn-small" id="lb-live" type="button" hidden>◎ LIVE</button>
       <!-- Inline, so iOS long-press offers "Add to Photos" with the true
            original rather than the downscaled display copy. -->
@@ -81,10 +105,22 @@
   </footer>
 </dialog>
 
-<div class="selbar" id="selbar" hidden>
+<div class="selbar" id="selbar" hidden {% if view == 'album' %}data-album="{{ album['id'] }}"{% endif %}>
   <span class="selbar-count" id="selbar-count">0 selected</span>
   <div class="selbar-actions">
     <button type="button" class="btn btn-small btn-quiet" id="sel-all">Select all</button>
+    <button type="button" class="btn btn-small btn-quiet" id="sel-fav">♥ Favorite</button>
+    {% if view == 'album' %}
+    <button type="button" class="btn btn-small btn-quiet" id="sel-unalbum">Remove from album</button>
+    {% endif %}
+    <select id="sel-album" class="sel-select" aria-label="Add to album">
+      <option value="">Add to album…</option>
+      {% for a in albums %}<option value="{{ a['id'] }}">{{ a['name'] }}</option>{% endfor %}
+      <option value="__new__">➕ New album…</option>
+    </select>
+    <input type="text" id="sel-album-name" class="sel-input" placeholder="Album name"
+           maxlength="40" hidden>
+    <button type="button" class="btn btn-small" id="sel-album-go" hidden>Add</button>
     <button type="button" class="btn btn-small btn-quiet" id="sel-cancel">Cancel</button>
     <a class="btn btn-small" id="sel-download" href="#">Download zip</a>
   </div>

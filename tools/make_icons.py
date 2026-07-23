@@ -23,6 +23,13 @@ INK = (43, 35, 32)
 BERRY = (196, 43, 79)
 PAPER_HEX, INK_HEX, BERRY_HEX = "#F4EFE6", "#2B2320", "#C42B4F"
 
+# The colour wheel the header logo animates through (see app.css blade-hue).
+# Icons are a frozen frame of it: six blades + the hexagon, one hue each.
+WHEEL_HEX = ["#E0435C", "#E8833A", "#E5B93C", "#7DBB6C",
+             "#4FB8A8", "#5B8DD9", "#9B6BD9"]
+WHEEL = [(224, 67, 92), (232, 131, 58), (229, 185, 60), (125, 187, 108),
+         (79, 184, 168), (91, 141, 217), (155, 107, 217)]
+
 SS = 4  # supersample factor for the PNGs
 VIEW = 48.0  # viewBox units
 
@@ -55,6 +62,22 @@ def _bezier(p0, c1, c2, p3, steps=24):
 # Six blade vertices around the opening, starting at the top.
 ANGLES = [-90 + i * 60 for i in range(6)]
 VERTS = [_pt(INNER_R, a) for a in ANGLES]
+
+# Icon separators between the coloured pie pieces: much thinner than the
+# brand line work, so the colour dominates and the ink just divides.
+THIN = 1.1
+
+
+def _sector(i, steps=12):
+    """The pie piece between blade i and blade i+1: out along blade i, around
+    the ring arc, back in along blade i+1, closed by the hex edge."""
+    a0 = ANGLES[i] + BLADE_SWEEP
+    a1 = ANGLES[i] + 60 + BLADE_SWEEP
+    pts = [VERTS[i], _pt(RING_R, a0)]
+    for s in range(1, steps + 1):
+        pts.append(_pt(RING_R, a0 + (a1 - a0) * s / steps))
+    pts.append(VERTS[(i + 1) % 6])
+    return pts
 
 # The opening: a hexagon. Each blade then leans out to the ring, all the same
 # direction, which is what gives an aperture its characteristic swirl. Critically
@@ -93,6 +116,11 @@ def draw_mark(size: int, content_fraction: float) -> Image.Image:
         for x, y in (pts[0], pts[-1]):
             d.ellipse([x - r, y - r, x + r, y + r], fill=colour)
 
+    # Colour first: each pie piece between two blades gets a wheel hue.
+    for i in range(6):
+        d.polygon([P(p) for p in _sector(i)], fill=WHEEL[i])
+
+    # Ink on top: full-weight brand lines, thin separators between pieces.
     stroke(LEAF_L, STROKE)
     stroke(LEAF_R, STROKE)
 
@@ -101,9 +129,9 @@ def draw_mark(size: int, content_fraction: float) -> Image.Image:
     d.ellipse([cx - rr, cy - rr, cx + rr, cy + rr], outline=INK,
               width=max(1, round(RING_STROKE * scale)))
 
-    stroke(HEX, STROKE)
+    stroke(HEX, THIN)
     for a, b in BLADES:
-        stroke([a, b], STROKE)
+        stroke([a, b], THIN)
 
     dr = DOT_R * scale
     d.ellipse([cx - dr, cy - dr, cx + dr, cy + dr], fill=BERRY)
@@ -119,19 +147,60 @@ def _poly(points):
                     for i, (x, y) in enumerate(points))
 
 
-def _shapes(stroke_colour: str, dot_colour: str) -> str:
+def _shapes(stroke_colour: str, dot_colour: str, animated: bool = False) -> str:
+    """The mark's SVG body.
+
+    animated=True (header logo only) wraps the aperture -- hex + blades -- in
+    <g class="lens"> and classes each blade, so app.css can spin the lens and
+    cycle each blade through the colour wheel. The favicon stays static.
+    """
     parts = [
         f'<g fill="none" stroke="{stroke_colour}" stroke-width="{STROKE}"'
         ' stroke-linecap="round" stroke-linejoin="round">',
         f'  <path d="{_poly(LEAF_L)}"/>',
         f'  <path d="{_poly(LEAF_R)}"/>',
         f'  <circle cx="{CX}" cy="{CY}" r="{RING_R}" stroke-width="{RING_STROKE}"/>',
-        f'  <path d="{_poly(HEX)}"/>',
     ]
-    for a, b in BLADES:
-        parts.append(f'  <path d="M{a[0]:.2f} {a[1]:.2f}L{b[0]:.2f} {b[1]:.2f}"/>')
+    if animated:
+        parts.append('  <g class="lens">')
+        parts.append(f'    <path class="blade blade-6" d="{_poly(HEX)}"/>')
+        for i, (a, b) in enumerate(BLADES):
+            parts.append(
+                f'    <path class="blade blade-{i}"'
+                f' d="M{a[0]:.2f} {a[1]:.2f}L{b[0]:.2f} {b[1]:.2f}"/>'
+            )
+        parts.append("  </g>")
+    else:
+        parts.append(f'  <path d="{_poly(HEX)}"/>')
+        for a, b in BLADES:
+            parts.append(f'  <path d="M{a[0]:.2f} {a[1]:.2f}L{b[0]:.2f} {b[1]:.2f}"/>')
     parts.append("</g>")
     parts.append(f'<circle cx="{CX}" cy="{CY}" r="{DOT_R}" fill="{dot_colour}"/>')
+    return "\n".join(parts)
+
+
+def _shapes_filled() -> str:
+    """Icon variant: coloured pie pieces under thin ink separators."""
+    parts = []
+    for i in range(6):
+        parts.append(f'<path d="{_poly(_sector(i))} Z" fill="{WHEEL_HEX[i]}"/>')
+    parts.append(
+        f'<g fill="none" stroke="{INK_HEX}"'
+        ' stroke-linecap="round" stroke-linejoin="round">'
+    )
+    parts.append(f'  <path stroke-width="{STROKE}" d="{_poly(LEAF_L)}"/>')
+    parts.append(f'  <path stroke-width="{STROKE}" d="{_poly(LEAF_R)}"/>')
+    parts.append(
+        f'  <circle stroke-width="{RING_STROKE}" cx="{CX}" cy="{CY}" r="{RING_R}"/>'
+    )
+    parts.append(f'  <path stroke-width="{THIN}" d="{_poly(HEX)}"/>')
+    for a, b in BLADES:
+        parts.append(
+            f'  <path stroke-width="{THIN}"'
+            f' d="M{a[0]:.2f} {a[1]:.2f}L{b[0]:.2f} {b[1]:.2f}"/>'
+        )
+    parts.append("</g>")
+    parts.append(f'<circle cx="{CX}" cy="{CY}" r="{DOT_R}" fill="{BERRY_HEX}"/>')
     return "\n".join(parts)
 
 
@@ -143,7 +212,7 @@ def write_svgs() -> None:
         "     currentColor so it follows the surrounding text. No external refs. -->\n"
         '<svg class="logo" viewBox="0 0 48 48" role="img" aria-label="Pi-Storage"\n'
         '     xmlns="http://www.w3.org/2000/svg">\n'
-        + _shapes("currentColor", f"var(--berry, {BERRY_HEX})")
+        + _shapes("currentColor", f"var(--berry, {BERRY_HEX})", animated=True)
         + "\n</svg>\n",
         encoding="utf-8",
     )
@@ -152,7 +221,7 @@ def write_svgs() -> None:
         "<!-- Generated by tools/make_icons.py -->\n"
         '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48">\n'
         f'<rect width="48" height="48" rx="10" fill="{PAPER_HEX}"/>\n'
-        + _shapes(INK_HEX, BERRY_HEX)
+        + _shapes_filled()
         + "\n</svg>\n",
         encoding="utf-8",
     )

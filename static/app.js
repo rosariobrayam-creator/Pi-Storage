@@ -1,5 +1,5 @@
-/* Lightbox, selection mode, and broken-thumbnail flagging.
-   No framework, no network fetches. */
+/* Lightbox, selection mode, favorites/albums, broken-thumbnail flagging.
+   No framework; fetch is used only for favorite/album toggles. */
 (function () {
   "use strict";
 
@@ -7,6 +7,22 @@
   if (!grid) return;
 
   var tiles = Array.prototype.slice.call(grid.querySelectorAll(".tile-btn"));
+
+  // POST form-encoded, expect JSON. A 401 means the session died; send them
+  // to sign in rather than failing silently.
+  function post(url, data) {
+    return fetch(url, { method: "POST", body: new URLSearchParams(data) })
+      .then(function (r) {
+        if (r.status === 401) { window.location = "/login"; throw new Error("401"); }
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        return r.json();
+      });
+  }
+
+  function setTileFav(t, on) {
+    t.dataset.fav = on ? "1" : "0";
+    t.closest(".tile").classList.toggle("is-fav", on);
+  }
 
   /* ------------------------------------------------------------ lightbox */
 
@@ -21,6 +37,7 @@
     var save = document.getElementById("lb-save");
     var liveBtn = document.getElementById("lb-live");
     var locLink = document.getElementById("lb-loc");
+    var favBtn = document.getElementById("lb-fav");
     var nameEl = dialog.querySelector(".lb-name");
     var subEl = dialog.querySelector(".lb-sub");
 
@@ -84,9 +101,19 @@
         locLink.hidden = true;
       }
       liveBtn.hidden = !t.dataset.live;
+      favBtn.classList.toggle("is-on", t.dataset.fav === "1");
       preload(i + 1);
       preload(i - 1);
     };
+
+    favBtn.addEventListener("click", function () {
+      var t = tiles[index];
+      if (!t) return;
+      post("/photo/" + t.dataset.id + "/favorite", {}).then(function (res) {
+        setTileFav(t, res.favorite);
+        favBtn.classList.toggle("is-on", res.favorite);
+      }).catch(function () {});
+    });
 
     // A Live Photo replays its paired clip in place of the still, then
     // falls back to the still when it ends.
@@ -184,6 +211,62 @@
     dlLink.addEventListener("click", function (e) {
       if (!selected.length) e.preventDefault();
     });
+
+    /* ---- favorites & albums on the selection bar ---- */
+
+    var favBulk = document.getElementById("sel-fav");
+    var albumSel = document.getElementById("sel-album");
+    var albumName = document.getElementById("sel-album-name");
+    var albumGo = document.getElementById("sel-album-go");
+    var unalbum = document.getElementById("sel-unalbum");
+
+    favBulk.addEventListener("click", function () {
+      if (!selected.length) return;
+      // If everything picked is already a favorite, unfavorite; else favorite.
+      var allFav = selected.every(function (id) {
+        var t = tiles.find(function (x) { return x.dataset.id === id; });
+        return t && t.dataset.fav === "1";
+      });
+      post("/photos/favorite", { ids: selected.join(","), on: allFav ? "0" : "1" })
+        .then(function (res) {
+          selected.forEach(function (id) {
+            var t = tiles.find(function (x) { return x.dataset.id === id; });
+            if (t) setTileFav(t, res.favorite);
+          });
+        }).catch(function () {});
+    });
+
+    albumSel.addEventListener("change", function () {
+      var isNew = albumSel.value === "__new__";
+      albumName.hidden = !isNew;
+      albumGo.hidden = !albumSel.value;
+      if (isNew) albumName.focus();
+    });
+
+    albumGo.addEventListener("click", function () {
+      if (!selected.length || !albumSel.value) return;
+      var data = { ids: selected.join(",") };
+      if (albumSel.value === "__new__") {
+        if (!albumName.value.trim()) { albumName.focus(); return; }
+        data.new_name = albumName.value.trim();
+      } else {
+        data.album_id = albumSel.value;
+      }
+      albumGo.disabled = true;
+      post("/albums/add", data).then(function () {
+        window.location.reload();  // pills + counts come from the server
+      }).catch(function () { albumGo.disabled = false; });
+    });
+
+    if (unalbum) {
+      unalbum.addEventListener("click", function () {
+        if (!selected.length) return;
+        post("/albums/" + selbar.dataset.album + "/remove",
+             { ids: selected.join(",") })
+          .then(function () { window.location.reload(); })
+          .catch(function () {});
+      });
+    }
   }
 
   /* ---------------------------------------------------------- tile clicks */
@@ -208,6 +291,55 @@
       }
     });
   });
+
+  /* -------------------------------------------------- a little easter egg */
+  // Wrench would approve of the self-hosting. Type it in the gallery.
+
+  console.log("%c" + [
+    "      _.-\"\"-._",
+    "     /  _  _  \\",
+    "    |  (o)(o)  |     WE ARE DEDSEC.",
+    "    |   /__\\   |     nice server. no cloud, no data brokers.",
+    "     \\  \\/\\/  /      we do not judge the 6,000 screenshots.",
+    "      '-.__.-'       (you know the word. type it in the gallery.)",
+  ].join("\n"), "color:#27E67A; font-family:monospace; font-size:12px;");
+
+  (function () {
+    var buf = "";
+    document.addEventListener("keydown", function (e) {
+      var t = e.target;
+      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA"
+                || t.tagName === "SELECT")) return;
+      if (!e.key || e.key.length !== 1) return;
+      buf = (buf + e.key.toLowerCase()).slice(-6);
+      if (buf === "dedsec") { buf = ""; breach(); }
+    });
+
+    function breach() {
+      if (document.querySelector(".dedsec")) return;
+      var el = document.createElement("div");
+      el.className = "dedsec";
+      el.innerHTML =
+        '<div class="dedsec-inner">' +
+        '<p class="dedsec-logo" data-text="ded_sec">ded_sec</p>' +
+        '<p class="dedsec-line">&gt; INTRUSION DETECTED&hellip; just kidding. it\'s us.</p>' +
+        '<p class="dedsec-line">&gt; We are DedSec.</p>' +
+        '<p class="dedsec-line">&gt; Self-hosted photos. No cloud. No data brokers. Respect.</p>' +
+        '<p class="dedsec-line">&gt; Your data belongs to you. Keep it that way, citizen.</p>' +
+        '<p class="dedsec-hint">[ click anywhere / esc ]</p>' +
+        "</div>" +
+        '<img class="dedsec-badge" src="/static/dedsec.webp" alt="">';
+      var close = function () {
+        el.remove();
+        document.removeEventListener("keydown", esc);
+      };
+      var esc = function (e) { if (e.key === "Escape") close(); };
+      el.addEventListener("click", close);
+      document.addEventListener("keydown", esc);
+      document.body.appendChild(el);
+      setTimeout(close, 12000);
+    }
+  })();
 
   /* --------------------------------------------------- broken thumbnails */
 

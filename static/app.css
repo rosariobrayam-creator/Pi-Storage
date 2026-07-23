@@ -121,6 +121,36 @@ a:hover { color: var(--ink); }
   text-decoration: none;
 }
 .brand .logo { width: 30px; height: 30px; color: var(--ink); flex: none; }
+
+/* The aperture is alive: the lens slowly turns while each blade cycles the
+   colour wheel, offset so together they always read as a spectrum -- a
+   heartbeat that shows the site hasn't frozen. Leaves and ring stay inked. */
+.logo .lens {
+  transform-box: view-box;
+  transform-origin: 24px 29px;   /* the aperture centre in the 48-unit viewBox */
+  animation: lens-spin 24s linear infinite;
+}
+@keyframes lens-spin { to { transform: rotate(360deg); } }
+
+.logo .blade { animation: blade-hue 9s linear infinite; }
+.logo .blade-0 { animation-delay: 0s; }
+.logo .blade-1 { animation-delay: -1.29s; }
+.logo .blade-2 { animation-delay: -2.57s; }
+.logo .blade-3 { animation-delay: -3.86s; }
+.logo .blade-4 { animation-delay: -5.14s; }
+.logo .blade-5 { animation-delay: -6.43s; }
+.logo .blade-6 { animation-delay: -7.71s; }  /* the hexagon joins the cycle */
+
+@keyframes blade-hue {
+  0%      { stroke: #E0435C; }  /* raspberry */
+  14.3%   { stroke: #E8833A; }  /* orange */
+  28.6%   { stroke: #E5B93C; }  /* honey */
+  42.9%   { stroke: #7DBB6C; }  /* leaf */
+  57.1%   { stroke: #4FB8A8; }  /* teal */
+  71.4%   { stroke: #5B8DD9; }  /* sky */
+  85.7%   { stroke: #9B6BD9; }  /* violet */
+  100%    { stroke: #E0435C; }
+}
 .wordmark {
   font-family: var(--serif);
   font-size: 1.35rem;
@@ -129,17 +159,37 @@ a:hover { color: var(--ink); }
 }
 .wordmark .dot { color: var(--berry); }
 
-.topnav { display: flex; align-items: center; gap: clamp(.6rem, 2vw, 1.25rem); }
+.topnav { display: flex; align-items: center; gap: clamp(.35rem, 1.5vw, .75rem); }
+/* Nav items are buttons too: pills with the same lift-and-press as .btn. */
 .topnav a, .linkish {
+  display: inline-flex;
+  align-items: center;
+  gap: .4rem;
   font-size: .9rem;
   color: var(--ink-soft);
   text-decoration: none;
   white-space: nowrap;
+  padding: .4rem .85rem;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  transition: color .18s ease, background .18s ease, border-color .18s ease,
+              transform .15s ease, box-shadow .15s ease;
 }
-.topnav a:hover, .linkish:hover { color: var(--berry); }
+.topnav a:hover, .linkish:hover {
+  color: var(--berry);
+  background: var(--paper-2);
+  border-color: var(--line);
+  transform: translateY(-1px);
+  box-shadow: 0 2px 6px var(--shadow);
+}
+.topnav a:active, .linkish:active {
+  transform: translateY(1px) scale(.96);
+  box-shadow: none;
+  transition-duration: .08s;
+}
 .topnav form { margin: 0; }
 .linkish {
-  background: none; border: 0; padding: 0;
+  background: none; border: 1px solid transparent;
   font-family: inherit; cursor: pointer;
 }
 
@@ -166,6 +216,39 @@ main { position: relative; z-index: 1; }
   margin: 0;
 }
 .meta { color: var(--ink-soft); font-size: .875rem; margin: .3rem 0 0; }
+.page-head-actions { display: flex; gap: .5rem; align-items: center; }
+.page-head-actions form { margin: 0; }
+
+/* Library shelves: All / Favorites / each album. Scrolls sideways on phones. */
+.views {
+  display: flex;
+  gap: .4rem;
+  margin-top: .7rem;
+  overflow-x: auto;
+  padding-bottom: .25rem;
+  scrollbar-width: none;
+}
+.views::-webkit-scrollbar { display: none; }
+.view-pill {
+  flex: none;
+  font-size: .82rem;
+  color: var(--ink-soft);
+  text-decoration: none;
+  padding: .32rem .8rem;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--paper-2);
+  transition: color .18s ease, background .18s ease, border-color .18s ease,
+              transform .15s ease, box-shadow .15s ease;
+}
+.view-pill:hover { color: var(--berry); transform: translateY(-1px); box-shadow: 0 2px 6px var(--shadow); }
+.view-pill:active { transform: translateY(1px) scale(.96); box-shadow: none; transition-duration: .08s; }
+.view-pill.is-active {
+  color: var(--btn-ink);
+  background: var(--berry);
+  border-color: var(--berry);
+}
+.view-n { opacity: .7; font-size: .72rem; }
 
 /* ------------------------------------------------------------------ grid */
 
@@ -241,6 +324,22 @@ main { position: relative; z-index: 1; }
   pointer-events: none;
 }
 
+/* Favorite heart, only on favorited tiles. */
+.tile-fav {
+  position: absolute;
+  z-index: 1;
+  left: .45rem;
+  bottom: .45rem;
+  font-size: .8rem;
+  color: #FFF;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, .6);
+  pointer-events: none;
+  display: none;
+}
+.tile.is-fav .tile-fav { display: block; }
+
+.lb-fav.is-on { background: var(--berry-deep); border-color: var(--berry-deep); }
+
 /* Live Photo chip, top-left like Apple's. */
 .tile-live {
   position: absolute;
@@ -299,6 +398,91 @@ main { position: relative; z-index: 1; }
   font-size: 1.5rem;
   font-weight: 600;
   margin: 0 0 .2rem;
+}
+
+/* --------------------------------------------------------- storage meter */
+
+.storage { margin-top: 1.4rem; }
+.storage-title {
+  margin: 1rem 0 .45rem;
+  font-size: .82rem;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+}
+.storage-title:first-child { margin-top: 0; }
+/* The phone-storage look: one rounded track, colour per slice. */
+.meter {
+  display: flex;
+  height: 14px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: var(--paper);
+  border: 1px solid var(--line);
+}
+.meter-seg { display: block; height: 100%; min-width: 0; }
+.meter-seg + .meter-seg { border-left: 1px solid var(--paper-2); }
+
+.legend {
+  list-style: none;
+  margin: .55rem 0 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: .3rem 1rem;
+  font-size: .8rem;
+  color: var(--ink-soft);
+}
+.legend .dot {
+  display: inline-block;
+  width: .6rem;
+  height: .6rem;
+  border-radius: 50%;
+  margin-right: .35rem;
+  vertical-align: baseline;
+}
+
+.seg-0 { background: var(--berry); }
+.seg-1 { background: var(--sky); }
+.seg-2 { background: var(--honey); }
+.seg-3 { background: var(--sage); }
+.seg-4 { background: #9B6BD9; }   /* violet */
+.seg-5 { background: #4FB8A8; }   /* teal */
+.seg-muted { background: var(--dust); }
+.seg-free { background: var(--paper); border: 1px solid var(--line); }
+
+/* ------------------------------------------------------ profile pictures */
+
+.nav-avatar {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  object-fit: cover;
+  border: 1.5px solid var(--line);
+}
+.account-head {
+  display: flex;
+  align-items: center;
+  gap: .9rem;
+  margin-bottom: .3rem;
+}
+.account-avatar {
+  width: 84px;
+  height: 84px;
+  border-radius: 50%;
+  object-fit: cover;
+  flex: none;
+  border: 2px solid var(--line);
+  box-shadow: 0 1px 3px var(--shadow), 0 6px 16px -8px var(--shadow);
+}
+.account-avatar-empty {
+  display: grid;
+  place-items: center;
+  font-family: var(--serif);
+  font-size: 2.2rem;
+  color: var(--btn-ink);
+  background: var(--berry);
+  user-select: none;
 }
 .card-foot { margin-top: 1.25rem; }
 .err-code {
@@ -360,9 +544,23 @@ input:focus-visible {
   text-decoration: none;
   text-align: center;
   cursor: pointer;
-  transition: background .18s ease, color .18s ease;
+  box-shadow: 0 1px 3px var(--shadow), 0 4px 10px -4px var(--shadow);
+  transition: background .18s ease, color .18s ease,
+              transform .15s ease, box-shadow .15s ease;
 }
-.btn:hover { background: var(--berry-deep); border-color: var(--berry-deep); color: var(--btn-ink); }
+.btn:hover {
+  background: var(--berry-deep);
+  border-color: var(--berry-deep);
+  color: var(--btn-ink);
+  transform: translateY(-1px);
+  box-shadow: 0 3px 6px var(--shadow), 0 8px 18px -6px var(--shadow);
+}
+/* The press: sink and shrink, fast in, springy out. */
+.btn:active {
+  transform: translateY(1px) scale(.97);
+  box-shadow: 0 1px 2px var(--shadow);
+  transition-duration: .08s;
+}
 .btn-quiet {
   background: transparent;
   color: var(--berry);
@@ -429,7 +627,9 @@ code { font-size: .88em; }
   width: 100%;
   height: 100%;
   background: transparent;
-  color: var(--paper);
+  /* --lb-ink, not --paper: the scrim is dark in BOTH schemes, and dark-mode
+     paper is near-black -- text set in it disappears entirely. */
+  color: var(--lb-ink);
   overflow: hidden;
 }
 .lightbox::backdrop { background: rgba(18, 14, 12, .93); }
@@ -440,7 +640,7 @@ code { font-size: .88em; }
   inset: 0;
   margin: auto;
   max-width: min(100vw - 2rem, 100%);
-  max-height: calc(100vh - 7rem - var(--sa-top) - var(--sa-bottom));
+  max-height: calc(100vh - 9rem - var(--sa-top) - var(--sa-bottom));
   object-fit: contain;
   border-radius: 4px;
 }
@@ -468,19 +668,29 @@ code { font-size: .88em; }
 .lb-prev { left: .75rem; }
 .lb-next { right: .75rem; }
 
+/* Metadata rides on top where there's room; actions stay on the bottom edge. */
+.lb-top {
+  position: absolute;
+  inset: 0 0 auto 0;
+  z-index: 1;
+  padding: calc(.9rem + var(--sa-top)) calc(4rem + var(--sa-right))  /* clear the close button */
+           1.4rem calc(clamp(.75rem, 3vw, 1.5rem) + var(--sa-left));
+  background: linear-gradient(rgba(0, 0, 0, .75) 45%, transparent);
+}
+
 .lb-bar {
   position: absolute;
   inset: auto 0 0 0;
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-end;
   gap: 1rem;
   flex-wrap: wrap;
   padding: .9rem calc(clamp(.75rem, 3vw, 1.5rem) + var(--sa-right))
            calc(.9rem + var(--sa-bottom)) calc(clamp(.75rem, 3vw, 1.5rem) + var(--sa-left));
   background: linear-gradient(transparent, rgba(0, 0, 0, .75) 45%);
 }
-.lb-meta { display: grid; min-width: 0; }
+.lb-meta { display: grid; gap: .15rem; min-width: 0; }
 .lb-name {
   font-family: var(--serif);
   font-size: 1.05rem;
@@ -489,15 +699,32 @@ code { font-size: .88em; }
   white-space: nowrap;
 }
 .lb-sub { font-size: .8rem; opacity: .75; }
+/* A real button, not a bare link -- same press feel as everything else. */
 .lb-loc {
-  font-size: .8rem;
-  color: var(--lb-ink);
-  opacity: .85;
-  text-decoration-thickness: 1px;
-  text-underline-offset: 2px;
+  margin-top: .35rem;
   width: fit-content;
+  font-size: .78rem;
+  color: var(--lb-ink);
+  text-decoration: none;
+  padding: .25rem .7rem;
+  border: 1px solid rgba(244, 239, 230, .5);
+  border-radius: 999px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, .4);
+  transition: transform .15s ease, box-shadow .15s ease, background .18s ease,
+              border-color .18s ease;
 }
-.lb-loc:hover { color: var(--berry); opacity: 1; }
+.lb-loc:hover {
+  color: var(--btn-ink);
+  background: var(--berry);
+  border-color: var(--berry);
+  transform: translateY(-1px);
+  box-shadow: 0 3px 8px rgba(0, 0, 0, .5);
+}
+.lb-loc:active {
+  transform: translateY(1px) scale(.97);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, .4);
+  transition-duration: .08s;
+}
 .lb-bar .btn { border-color: rgba(244, 239, 230, .5); background: transparent; color: var(--lb-ink); }
 .lb-bar .btn:hover { background: var(--berry); border-color: var(--berry); color: var(--btn-ink); }
 
@@ -560,7 +787,17 @@ code { font-size: .88em; }
 }
 .selbar[hidden] { display: none; }
 .selbar-count { font-size: .9rem; color: var(--ink-soft); }
-.selbar-actions { display: flex; gap: .5rem; flex-wrap: wrap; }
+.selbar-actions { display: flex; gap: .5rem; flex-wrap: wrap; align-items: center; }
+.sel-select, .sel-input {
+  font: inherit;
+  font-size: .82rem;
+  color: var(--ink);
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: .35rem .7rem;
+  max-width: 11rem;
+}
 
 /* Keep the last row of photos clear of the fixed bar. */
 body.has-selbar .wide { padding-bottom: 7rem; }
@@ -568,6 +805,82 @@ body.has-selbar .wide { padding-bottom: 7rem; }
 .btn.is-disabled {
   opacity: .45;
   pointer-events: none;
+}
+
+/* ------------------------------------------------------------ ded_sec
+   You typed the word. This is the reward. */
+
+.dedsec {
+  position: fixed;
+  inset: 0;
+  z-index: 999;
+  display: grid;
+  place-items: center;
+  text-align: left;
+  background:
+    repeating-linear-gradient(0deg, rgba(39, 230, 122, .06) 0 1px, transparent 1px 3px),
+    rgba(6, 10, 8, .96);
+  color: #27E67A;
+  font-family: ui-monospace, "Cascadia Mono", Menlo, Consolas, monospace;
+  cursor: pointer;
+  animation: dedsec-in .18s steps(3) both;
+}
+@keyframes dedsec-in { from { opacity: 0; transform: scale(1.04); } }
+
+.dedsec-inner { padding: 1.5rem; max-width: 34rem; }
+.dedsec-logo {
+  position: relative;
+  margin: 0 0 1.2rem;
+  font-size: clamp(2.4rem, 10vw, 4rem);
+  font-weight: 700;
+  letter-spacing: .1em;
+  animation: dedsec-flicker 3s infinite;
+}
+/* RGB-split glitch: two ghost copies jittering out of register. */
+.dedsec-logo::before, .dedsec-logo::after {
+  content: attr(data-text);
+  position: absolute;
+  inset: 0;
+  mix-blend-mode: screen;
+}
+.dedsec-logo::before {
+  color: #FF3D6E;
+  animation: dedsec-jitter 2.1s steps(2) infinite;
+}
+.dedsec-logo::after {
+  color: #3DC7FF;
+  animation: dedsec-jitter 1.7s steps(2) infinite reverse;
+}
+@keyframes dedsec-jitter {
+  0%, 100% { transform: translate(-2px, 1px); }
+  33%      { transform: translate(2px, -1px); }
+  66%      { transform: translate(-1px, -2px); }
+}
+@keyframes dedsec-flicker {
+  0%, 92%, 100% { opacity: 1; }
+  93%, 95%      { opacity: .35; }
+}
+.dedsec-line { margin: .25rem 0; font-size: .95rem; }
+.dedsec-hint { margin-top: 1.4rem; opacity: .6; font-size: .8rem; }
+
+/* The spray in the corner. screen-blend melts its black square into the
+   overlay so only the art shows; the jitter reads as a bad signal. */
+.dedsec-badge {
+  position: absolute;
+  right: clamp(.75rem, 3vw, 2rem);
+  bottom: calc(clamp(.75rem, 3vw, 2rem) + var(--sa-bottom));
+  width: clamp(90px, 20vw, 160px);
+  mix-blend-mode: screen;
+  opacity: .92;
+  pointer-events: none;
+  animation: dedsec-flicker 2.4s infinite,
+             dedsec-badge-jitter 1.3s steps(3) infinite;
+}
+@keyframes dedsec-badge-jitter {
+  0%, 100% { transform: translate(0, 0); }
+  30%      { transform: translate(-2px, 1px) skewX(.6deg); }
+  55%      { transform: translate(1px, -2px); }
+  80%      { transform: translate(2px, 1px) skewX(-.6deg); }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -579,4 +892,8 @@ body.has-selbar .wide { padding-bottom: 7rem; }
   .tile-btn:hover, .tile-btn:focus-visible, .tile-btn:active { transform: none; }
   .tile-btn:hover img { transform: none; }
   .grid.selecting .tile.is-selected .tile-btn img { transform: none; }
+  .btn:hover, .btn:active,
+  .topnav a:hover, .topnav a:active, .linkish:hover, .linkish:active,
+  .lb-loc:hover, .lb-loc:active { transform: none; }
+  .logo .lens, .logo .blade { animation: none; }
 }

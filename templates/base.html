@@ -33,7 +33,10 @@
   <nav class="topnav">
     <a href="{{ url_for('gallery') }}">Library</a>
     <a href="{{ url_for('upload_form') }}">Upload</a>
-    <a href="{{ url_for('account') }}">{{ current_user.username }}</a>
+    <a href="{{ url_for('account') }}">
+      {%- if avatar_ver %}<img class="nav-avatar" alt=""
+        src="{{ url_for('avatar', user_id=current_user.id) }}?v={{ avatar_ver }}">{% endif -%}
+      {{ current_user.username }}</a>
     <form method="post" action="{{ url_for('logout') }}">
       <button class="linkish" type="submit">Sign out</button>
     </form>
