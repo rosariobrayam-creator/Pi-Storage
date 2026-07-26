@@ -8,19 +8,96 @@
   <p class="meta">They'll land in your library, visible only to you.</p>
 
   <form method="post" action="{{ url_for('upload') }}"
-        enctype="multipart/form-data" class="stack">
+        enctype="multipart/form-data" class="stack" id="upload-form">
     <input type="hidden" name="device" value="browser">
+    <!-- redirect=1 is the no-JS fallback; the XHR path below strips it so
+         the server answers with JSON instead of a 302. -->
     <input type="hidden" name="redirect" value="1">
     <label class="filedrop">
       <input type="file" name="file" accept="image/*,video/*,.heic,.heif,.mov,.mp4" multiple required>
       <span>Choose photos or videos…</span>
     </label>
-    <button class="btn" type="submit">Upload</button>
+    <button class="btn" type="submit" id="upload-btn">Upload</button>
+    <p class="flash flash-error" id="upload-error" hidden></p>
   </form>
 
+  <p class="meta card-foot">
+    Heads-up: Live Photos picked here arrive as plain stills — the browser
+    is never given the motion clip, so only the Shortcut can keep them live.
+  </p>
   <p class="meta card-foot">
     Sending from an iPhone Shortcut instead?
     <a href="{{ url_for('account') }}">Grab your upload token</a>.
   </p>
 </div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  var form = document.getElementById("upload-form");
+  var btn = document.getElementById("upload-btn");
+  var errEl = document.getElementById("upload-error");
+  if (!form || !btn || !window.FormData || !window.PSLoad) return;
+  var busy = false;
+
+  form.addEventListener("submit", function (e) {
+    e.preventDefault();
+    if (busy) return;
+    busy = true;
+    btn.disabled = true;
+    btn.setAttribute("data-was-enabled", "1");   // bfcache reset hook
+    errEl.hidden = true;
+
+    var fd = new FormData(form);
+    fd.delete("redirect");   // JSON response, not a 302
+
+    var xhr = new XMLHttpRequest();
+    xhr.open("POST", form.action);
+    xhr.responseType = "json";
+    PSLoad.progress(0, "Uploading…");
+
+    xhr.upload.onprogress = function (ev) {
+      if (!ev.lengthComputable) return;
+      var p = ev.loaded / ev.total * 100;
+      if (p >= 100) {
+        // Bytes are all on the Pi; it's now hashing/probing/thumbnailing.
+        PSLoad.show("Processing on the Pi…");
+      } else {
+        PSLoad.progress(p, "Uploading…");
+      }
+    };
+
+    xhr.onload = function () {
+      var res = xhr.response || {};
+      if (xhr.status === 200) {
+        var msg = (res.stored || 0) + " uploaded, " + (res.duplicates || 0)
+          + " already here, " + (res.rejected || 0) + " rejected.";
+        try { sessionStorage.setItem("ps-flash", msg); } catch (err) {}
+        location.href = "{{ url_for('gallery') }}";
+        return;
+      }
+      var detail = res && (res.detail || res.error);
+      if (!detail && res && res.results && res.results.length) {
+        detail = res.results[0].reason || "";
+      }
+      fail(detail ? "Upload failed: " + detail
+                  : "Upload failed (HTTP " + xhr.status + ").");
+    };
+    xhr.onerror = function () {
+      fail("Upload failed — network error. Is the Pi reachable?");
+    };
+    xhr.send(fd);
+
+    function fail(msg) {
+      busy = false;
+      btn.disabled = false;
+      btn.removeAttribute("data-was-enabled");
+      PSLoad.hide();
+      errEl.textContent = msg;
+      errEl.hidden = false;
+    }
+  });
+})();
+</script>
 {% endblock %}

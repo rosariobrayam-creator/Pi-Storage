@@ -44,6 +44,7 @@
             data-device="{{ p['device'] or 'unknown device' }}"
             data-format="{{ p['format'] }}"
             data-type="{{ p['media_type'] }}"
+            data-size="{{ p['size_bytes'] or 0 }}"
             {% if p['taken_at'] %}data-taken="{{ p['taken_at'] }}"{% endif %}
             {% if p['camera'] %}data-camera="{{ p['camera'] }}"{% endif %}
             {% if p['latitude'] is not none %}data-lat="{{ p['latitude'] }}" data-lon="{{ p['longitude'] }}"{% endif %}
@@ -90,6 +91,8 @@
     </div>
   </header>
   <img id="lb-img" alt="">
+  <div class="lb-loading">{% include "_loader.svg" %}</div>
+  <p class="lb-error">Couldn't load this photo — check the connection and try again.</p>
   <video id="lb-video" controls playsinline preload="metadata" hidden></video>
   <footer class="lb-bar">
     <div class="lb-actions">

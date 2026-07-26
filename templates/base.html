@@ -30,7 +30,7 @@
   </a>
 
   {% if current_user %}
-  <nav class="topnav">
+  <nav class="topnav" id="topnav">
     <a href="{{ url_for('gallery') }}">Library</a>
     <a href="{{ url_for('upload_form') }}">Upload</a>
     <a href="{{ url_for('account') }}">
@@ -41,6 +41,10 @@
       <button class="linkish" type="submit">Sign out</button>
     </form>
   </nav>
+  <button class="nav-burger" id="nav-burger" type="button"
+          aria-label="Menu" aria-expanded="false" aria-controls="topnav">
+    <span></span><span></span><span></span>
+  </button>
   {% endif %}
 </header>
 
@@ -58,6 +62,177 @@
 {% block content %}{% endblock %}
 </main>
 
+{% if current_user %}
+<div class="loading-overlay" id="loading-overlay" hidden>
+  {% include "_loader.svg" %}
+  <p class="loading-pct" id="loading-pct" hidden></p>
+  <p class="loading-text" id="loading-text">Working…</p>
+</div>
+<div class="ptr-chip" id="ptr-chip" aria-hidden="true">
+  {% include "_loader.svg" %}
+</div>
+
+<!-- Inline rather than in app.js: that file only loads on the gallery page,
+     and the menu has to work everywhere the header does. -->
+<script>
+(function () {
+  var burger = document.getElementById("nav-burger");
+  var nav = document.getElementById("topnav");
+  if (!burger || !nav) return;
+  function setOpen(on) {
+    document.body.classList.toggle("nav-open", on);
+    burger.setAttribute("aria-expanded", on ? "true" : "false");
+  }
+  burger.addEventListener("click", function () {
+    setOpen(!document.body.classList.contains("nav-open"));
+  });
+  document.addEventListener("click", function (e) {
+    if (!document.body.classList.contains("nav-open")) return;
+    if (!nav.contains(e.target) && !burger.contains(e.target)) setOpen(false);
+  });
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "Escape") setOpen(false);
+  });
+})();
+
+/* Shared loading UI. Also inline: the upload page and the pager need it and
+   they don't load app.js. */
+(function () {
+  var overlay = document.getElementById("loading-overlay");
+  if (!overlay) return;
+  var pctEl = document.getElementById("loading-pct");
+  var textEl = document.getElementById("loading-text");
+  var mark = overlay.querySelector(".loader-mark");
+  var wedges = mark.querySelectorAll(".ldr-seg");   // DOM order = clockwise
+
+  function clearFill() {
+    mark.classList.remove("is-progress");
+    for (var i = 0; i < wedges.length; i++) wedges[i].classList.remove("lit");
+  }
+
+  window.PSLoad = {
+    show: function (msg) {          // indeterminate: spinning chase
+      textEl.textContent = msg || "Working…";
+      pctEl.hidden = true;
+      clearFill();
+      overlay.hidden = false;
+    },
+    progress: function (p, msg) {   // determinate: wedges fill with real %
+      p = Math.max(0, Math.min(100, p));
+      if (msg) textEl.textContent = msg;
+      pctEl.textContent = Math.round(p) + "%";
+      pctEl.hidden = false;
+      mark.classList.add("is-progress");
+      for (var i = 0; i < wedges.length; i++) {
+        wedges[i].classList.toggle("lit", p >= (i + 1) * (100 / 6) - 0.5);
+      }
+      overlay.hidden = false;
+    },
+    hide: function () {
+      overlay.hidden = true;
+      pctEl.hidden = true;
+      clearFill();
+    }
+  };
+
+  // Cross-page loading bar: navigating the gallery pager (or the header) on a
+  // Pi over Tailscale isn't instant, and a dead-feeling click reads as broken.
+  function showPageload() {
+    if (document.getElementById("pageload")) return;
+    var bar = document.createElement("div");
+    bar.id = "pageload";
+    bar.className = "pageload";
+    document.body.appendChild(bar);
+  }
+  document.addEventListener("click", function (e) {
+    if (e.defaultPrevented || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+    var a = e.target.closest && e.target.closest(".pager a, .views a, .topnav a");
+    if (a && a.target !== "_blank") showPageload();
+  });
+
+  // A flash message carried across an XHR-initiated redirect (upload page).
+  try {
+    var msg = sessionStorage.getItem("ps-flash");
+    if (msg) {
+      sessionStorage.removeItem("ps-flash");
+      var ul = document.querySelector(".flashes");
+      if (!ul) {
+        ul = document.createElement("ul");
+        ul.className = "flashes";
+        document.querySelector("main").before(ul);
+      }
+      var li = document.createElement("li");
+      li.className = "flash flash-ok";
+      li.textContent = msg;
+      ul.appendChild(li);
+    }
+  } catch (err) { /* private mode, fine */ }
+
+  // iOS bfcache: going Back restores the frozen page, overlay and all.
+  window.addEventListener("pageshow", function (e) {
+    var bar = document.getElementById("pageload");
+    if (bar) bar.remove();
+    if (!e.persisted) return;
+    PSLoad.hide();
+    document.querySelectorAll("button[data-was-enabled]").forEach(function (b) {
+      b.disabled = false;
+      b.removeAttribute("data-was-enabled");
+    });
+  });
+})();
+
+/* Pull-to-refresh. Standalone home-screen apps get no browser refresh UI at
+   all, so pulling down from the very top mimics the native gesture.
+   overscroll-behavior in app.css keeps the browser's own version out of the
+   way where one exists. */
+(function () {
+  if (!("ontouchstart" in window)) return;
+  var chip = document.getElementById("ptr-chip");
+  if (!chip) return;
+  var THRESH = 70, MAX = 110, REST = -64;
+  var startY = null, dist = 0, pulling = false;
+
+  document.addEventListener("touchstart", function (e) {
+    startY = null;
+    if (window.scrollY > 0) return;
+    if (document.body.classList.contains("nav-open")) return;
+    var lb = document.getElementById("lightbox");
+    if (lb && lb.open) return;
+    startY = e.touches[0].clientY;
+    dist = 0;
+    pulling = false;
+  }, { passive: true });
+
+  document.addEventListener("touchmove", function (e) {
+    if (startY === null) return;
+    var dy = e.touches[0].clientY - startY;
+    if (dy <= 0 && !pulling) { startY = null; return; }
+    pulling = true;
+    dist = Math.max(0, Math.min(dy * 0.5, MAX));   // rubber-band resistance
+    chip.classList.remove("ptr-settle");
+    chip.style.transform = "translate(-50%," + (REST + dist) + "px)";
+    chip.classList.toggle("ptr-ready", dist >= THRESH);
+  }, { passive: true });
+
+  document.addEventListener("touchend", function () {
+    if (startY === null) return;
+    startY = null;
+    if (!pulling) return;
+    pulling = false;
+    if (dist >= THRESH) {
+      chip.classList.add("ptr-loading");
+      chip.style.transform = "translate(-50%, 12px)";
+      location.reload();
+    } else {
+      chip.classList.add("ptr-settle");
+      chip.classList.remove("ptr-ready");
+      chip.style.transform = "";
+    }
+    dist = 0;
+  });
+})();
+</script>
+{% endif %}
 {% block scripts %}{% endblock %}
 </body>
 </html>

@@ -28,6 +28,7 @@ import json
 import logging
 import mimetypes
 import os
+import queue
 import re
 import secrets
 import shutil
@@ -47,6 +48,7 @@ from flask import (
     request, send_file, session, stream_with_context, url_for,
 )
 from PIL import Image, ImageOps
+from werkzeug.datastructures import FileStorage
 from werkzeug.exceptions import HTTPException
 from werkzeug.security import check_password_hash, generate_password_hash
 
@@ -92,7 +94,7 @@ MIN_FREE_MB = int(os.environ.get("MIN_FREE_MB", "4096"))
 HOST = os.environ.get("HOST", "0.0.0.0")
 PORT = int(os.environ.get("PORT", "8000"))
 
-PAGE_SIZE = 200
+PAGE_SIZE = 100
 THUMB_EDGE = 480
 DISPLAY_EDGE = 2048
 
@@ -210,7 +212,9 @@ if os.environ.get("TRUST_PROXY") == "1":
 
 
 def db() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH)
+    # timeout: wait out a concurrent writer instead of raising "database is
+    # locked" when an upload's transaction overlaps a gallery request.
+    conn = sqlite3.connect(DB_PATH, timeout=15)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     return conn
@@ -691,6 +695,22 @@ def identify_image(path: Path):
         return None
 
 
+def inspect_image(path: Path):
+    """identify_image plus EXIF details from the same open, or None.
+
+    Decoding HEIC is the expensive part of an upload on a Pi; pulling the
+    dimensions and the EXIF from one open instead of two keeps it to a single
+    decode (plus the cheap verify pass).
+    """
+    try:
+        with Image.open(path) as im:
+            im.verify()  # integrity check; invalidates the object
+        with Image.open(path) as im:
+            return im.format, im.width, im.height, _image_details(im)
+    except Exception:
+        return None
+
+
 def identify_video(head: bytes) -> str | None:
     """Return "MOV"/"MP4" if the first bytes look like a video container.
 
@@ -759,16 +779,15 @@ def _gps_to_float(vals, ref) -> float | None:
         return None
 
 
-def extract_image_details(path: Path) -> dict:
-    """taken_at / latitude / longitude / camera from EXIF, all optional.
+def _image_details(im) -> dict:
+    """taken_at / latitude / longitude / camera from an open image's EXIF.
 
     Screenshots and messaging-app downloads legitimately have no EXIF at all,
     so every field degrades to None rather than failing the upload.
     """
     out = {"taken_at": None, "latitude": None, "longitude": None, "camera": None}
     try:
-        with Image.open(path) as im:
-            exif = im.getexif()
+        exif = im.getexif()
     except Exception:
         return out
     if not exif:
@@ -794,8 +813,17 @@ def extract_image_details(path: Path) -> dict:
             out["latitude"] = _gps_to_float(gps.get(2), gps.get(1))
             out["longitude"] = _gps_to_float(gps.get(4), gps.get(3))
     except Exception:
-        log.warning("EXIF parse failed for %s", path)
+        log.warning("EXIF parse failed for %s", getattr(im, "filename", "<image>"))
     return out
+
+
+def extract_image_details(path: Path) -> dict:
+    """_image_details for callers that only have a path (see cmd_backfill)."""
+    try:
+        with Image.open(path) as im:
+            return _image_details(im)
+    except Exception:
+        return {"taken_at": None, "latitude": None, "longitude": None, "camera": None}
 
 
 def safe_stem(name: str) -> str:
@@ -873,6 +901,73 @@ def cached_image(path: Path, mimetype: str = "image/jpeg"):
     resp.cache_control.private = True  # per-user; never let a proxy share these
     resp.cache_control.max_age = 86400
     return resp
+
+
+# ------------------------------------------------- background thumbnails
+# Thumbnails used to be rendered on the first /thumb request, so a cold
+# gallery page paid seconds of Pillow/ffmpeg work per tile through four
+# server threads -- which is exactly when tiles started timing out. A single
+# worker thread renders them at upload time (and backfills at startup), so
+# the request path almost always finds the file already on disk.
+
+THUMB_QUEUE: queue.Queue = queue.Queue()
+
+
+def generate_thumb(photo_id: int) -> None:
+    """Render the thumbnail (and display copy where needed) for one photo.
+
+    Racing the on-demand generation in /thumb is fine: both sides write a
+    temp file and os.replace it into place. Never raises -- the worker loop
+    and the CLI both count on that.
+    """
+    try:
+        with db() as conn:
+            row = conn.execute(
+                "SELECT * FROM photos WHERE id = ?", (photo_id,)
+            ).fetchone()
+        if row is None:
+            return
+        # Same checks as resolve_stored, minus the abort(): no request here.
+        src = (PHOTOS_DIR / row["stored_path"]).resolve()
+        if not src.is_relative_to(PHOTOS_DIR.resolve()) or not src.exists():
+            return
+        tpath = THUMBS_DIR / f"{photo_id}.jpg"
+        if not tpath.exists():
+            if row["media_type"] == "video":
+                render_video_poster(src, tpath)
+            else:
+                render_cached(src, tpath, THUMB_EDGE, 80)
+        # HEIC/TIFF/BMP also get their lightbox copy now, so the first open
+        # isn't a multi-second transcode either.
+        if row["media_type"] == "photo" and row["format"] not in BROWSER_SAFE:
+            dpath = DISPLAY_DIR / f"{photo_id}.jpg"
+            if not dpath.exists():
+                render_cached(src, dpath, DISPLAY_EDGE, 85)
+    except Exception:
+        log.exception("background thumbnail failed for photo %d", photo_id)
+
+
+def thumb_worker() -> None:
+    while True:
+        photo_id = THUMB_QUEUE.get()
+        generate_thumb(photo_id)
+        THUMB_QUEUE.task_done()
+
+
+def enqueue_missing_thumbs() -> None:
+    """Queue every photo without a thumbnail, newest first.
+
+    Newest first because page 1 of the gallery is what people actually open;
+    the deep archive can warm at its leisure.
+    """
+    have = {int(p.stem) for p in THUMBS_DIR.glob("*.jpg") if p.stem.isdigit()}
+    with db() as conn:
+        ids = [r["id"] for r in conn.execute("SELECT id FROM photos ORDER BY id DESC")]
+    missing = [i for i in ids if i not in have]
+    for photo_id in missing:
+        THUMB_QUEUE.put(photo_id)
+    if missing:
+        log.info("queued %d missing thumbnails for background render", len(missing))
 
 
 # A Live Photo's clip runs about 3s; anything longer is just a video.
@@ -960,9 +1055,9 @@ def store_photo(file_storage, owner_id: int, device: str) -> dict:
 
         width = height = duration_s = None
         details = {"taken_at": None, "latitude": None, "longitude": None, "camera": None}
-        ident = identify_image(tmp)
+        ident = inspect_image(tmp)
         if ident is not None:
-            fmt, width, height = ident
+            fmt, width, height, details = ident
             if fmt not in ALLOWED_FORMATS:
                 return {
                     "original_name": original,
@@ -971,7 +1066,6 @@ def store_photo(file_storage, owner_id: int, device: str) -> dict:
                 }
             media_type = "photo"
             ext = ALLOWED_FORMATS[fmt]
-            details = extract_image_details(tmp)
         else:
             if len(head) >= 12 and head[4:12] in HEIC_MAGIC:
                 return {
@@ -1034,6 +1128,9 @@ def store_photo(file_storage, owner_id: int, device: str) -> dict:
                 photo_id = cur.lastrowid
                 pair_live_photo(conn, owner_id, photo_id, media_type, original, duration_s)
             os.replace(tmp, dest)
+            # Pre-render the thumbnail off the request thread, so the gallery
+            # never pays the decode cost on first view.
+            THUMB_QUEUE.put(photo_id)
         except sqlite3.IntegrityError:  # same file uploaded concurrently
             return {"original_name": original, "status": "duplicate"}
     finally:
@@ -1272,6 +1369,26 @@ def account_rotate():
 # ----------------------------------------------------------- photo routes
 
 
+def raw_upload_filestorage() -> FileStorage | None:
+    """Wrap a raw (non-multipart) request body as an upload.
+
+    The iOS Shortcuts "Request Body: File" mode sends the bytes as
+    application/octet-stream with no form encoding at all, which is why
+    request.files comes up empty. The filename rides in ?filename= or an
+    X-Filename header; without it the file still stores fine (store_photo
+    names by content), but Live Photo pairing needs the original name.
+    """
+    if request.mimetype in ("multipart/form-data", "application/x-www-form-urlencoded"):
+        return None  # a form post with no file part is a genuine client error
+    if not request.content_length:
+        return None
+    name = (request.args.get("filename")
+            or request.headers.get("X-Filename") or "").strip()
+    # Hand store_photo the WSGI stream directly; it reads in 1MB chunks and
+    # waitress spools request bodies to disk, so large videos never sit in RAM.
+    return FileStorage(stream=request.stream, filename=name)
+
+
 @app.post("/upload")
 @auth_required
 def upload():
@@ -1288,9 +1405,18 @@ def upload():
     for field in request.files:
         files.extend(request.files.getlist(field))
     if not files:
-        abort(400, description="No file in request. Send multipart/form-data with a 'file' field.")
+        raw = raw_upload_filestorage()
+        if raw is not None:
+            files = [raw]
+    if not files:
+        abort(400, description=(
+            "No file received. Either send multipart/form-data with a 'file'"
+            " field, or send the raw file as the request body with"
+            " ?filename=<name> (or an X-Filename header)."
+        ))
 
-    device = request.form.get("device", "")
+    device = (request.form.get("device") or request.args.get("device")
+              or request.headers.get("X-Device", ""))
     results = [store_photo(f, g.identity.id, device) for f in files]
     stored = sum(1 for r in results if r["status"] == "stored")
     dupes = sum(1 for r in results if r["status"] == "duplicate")
@@ -1401,7 +1527,10 @@ def thumb(photo_id: int):
             )
             resp = send_file(io.BytesIO(PLACEHOLDER_SVG), mimetype="image/svg+xml")
             resp.headers["X-Thumb-Error"] = "generation-failed"
-            resp.cache_control.no_store = True  # retry on the next load
+            # Cache briefly: without this every page load re-pays the failed
+            # generation attempt, which is what stalls large galleries.
+            resp.cache_control.private = True
+            resp.cache_control.max_age = 300
             return resp
     return cached_image(tpath)
 
@@ -1908,6 +2037,28 @@ def cmd_backfill(argv) -> None:
     print(f"details filled: {updated} | files missing: {missing} | live photo pairs: {pairs}")
 
 
+def cmd_backfill_thumbs(argv) -> None:
+    """Render any missing thumbnails synchronously, with progress output.
+
+    The server does the same work in the background on startup; this exists
+    for force-warming the whole library while watching it happen. Safe to
+    re-run: photos that already have a thumbnail are skipped.
+    """
+    have = {int(p.stem) for p in THUMBS_DIR.glob("*.jpg") if p.stem.isdigit()}
+    with db() as conn:
+        ids = [r["id"] for r in conn.execute("SELECT id FROM photos ORDER BY id DESC")]
+    missing = [i for i in ids if i not in have]
+    print(f"{len(ids)} photos, {len(missing)} thumbnails to render")
+    done = 0
+    for photo_id in missing:
+        generate_thumb(photo_id)  # logs its own failures, never raises
+        done += 1
+        if done % 25 == 0:
+            print(f"  {done}/{len(missing)}")
+    failed = sum(1 for i in missing if not (THUMBS_DIR / f"{i}.jpg").exists())
+    print(f"rendered: {done - failed} | failed: {failed} (see log for tracebacks)")
+
+
 def check_storage_ready() -> None:
     """Prepare PHOTOS_DIR, or refuse to start if it looks like an absent drive.
 
@@ -1954,12 +2105,14 @@ def check_storage_ready() -> None:
 
 def main() -> None:
     argv = sys.argv[1:]
-    if argv and argv[0] in ("create-user", "rotate-token", "backfill-details"):
+    if argv and argv[0] in ("create-user", "rotate-token", "backfill-details",
+                            "backfill-thumbs"):
         check_storage_ready()
         init_db()
         migrate()
         {"create-user": cmd_create_user, "rotate-token": cmd_rotate_token,
-         "backfill-details": cmd_backfill}[argv[0]](argv[1:])
+         "backfill-details": cmd_backfill,
+         "backfill-thumbs": cmd_backfill_thumbs}[argv[0]](argv[1:])
         return
 
     if ALLOW_LEGACY_KEY and not API_KEY:
@@ -1981,12 +2134,16 @@ def main() -> None:
         HOST, PORT, PHOTOS_DIR, HEIC_SUPPORT, VIDEO_SUPPORT,
         "invite-only" if INVITE_CODE else "off",
     )
+    threading.Thread(target=thumb_worker, daemon=True, name="thumb-worker").start()
+    enqueue_missing_thumbs()
     try:
         from waitress import serve  # production-grade WSGI server
 
         # waitress has its own body cap (default 1GB) that would 413 large
         # videos before Flask's MAX_CONTENT_LENGTH ever saw them.
-        serve(app, host=HOST, port=PORT,
+        # threads: the default 4 is too few once a page of thumbnails and an
+        # upload land together; thumb work is I/O + ffmpeg (capped separately).
+        serve(app, host=HOST, port=PORT, threads=8,
               max_request_body_size=MAX_UPLOAD_MB * 1024 * 1024)
     except ImportError:
         app.run(host=HOST, port=PORT)

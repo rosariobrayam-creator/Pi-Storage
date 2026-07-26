@@ -59,7 +59,9 @@
 
 *, *::before, *::after { box-sizing: border-box; }
 
-html { -webkit-text-size-adjust: 100%; }
+/* overscroll: suppress the browser's native pull-to-refresh so the site's
+   own (base.html) is the only one that answers the gesture. */
+html { -webkit-text-size-adjust: 100%; overscroll-behavior-y: contain; }
 
 body {
   margin: 0;
@@ -208,6 +210,75 @@ a:hover { color: var(--ink); }
 .linkish {
   background: none; border: 1px solid transparent;
   font-family: inherit; cursor: pointer;
+}
+
+/* Hamburger. Hidden on wide screens, where the pills fit in the bar. */
+.nav-burger {
+  display: none;
+  flex: none;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: none;
+  cursor: pointer;
+}
+.nav-burger span {
+  display: block;
+  width: 18px;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--ink);
+  transition: transform .2s ease, opacity .15s ease;
+}
+.nav-burger:hover { background: var(--paper-2); border-color: var(--line); }
+/* The three lines fold into an X while the menu is open. */
+body.nav-open .nav-burger span:nth-child(1) { transform: translateY(6px) rotate(45deg); }
+body.nav-open .nav-burger span:nth-child(2) { opacity: 0; }
+body.nav-open .nav-burger span:nth-child(3) { transform: translateY(-6px) rotate(-45deg); }
+
+@media (max-width: 640px) {
+  .nav-burger { display: inline-flex; }
+
+  /* The sideways pill scroller becomes a dropdown sheet under the bar. */
+  .topnav {
+    display: none;
+    position: absolute;
+    top: 100%;
+    left: 0;
+    right: 0;
+    flex-direction: column;
+    align-items: stretch;
+    gap: .25rem;
+    overflow: visible;
+    padding: .6rem calc(.9rem + var(--sa-right)) .9rem calc(.9rem + var(--sa-left));
+    background: color-mix(in srgb, var(--paper) 96%, transparent);
+    backdrop-filter: saturate(1.4) blur(12px);
+    border-bottom: 1px solid var(--line);
+    box-shadow: 0 12px 24px var(--shadow);
+  }
+  body.nav-open .topnav {
+    display: flex;
+    animation: nav-drop .18s ease;
+  }
+  .topnav a, .topnav .linkish {
+    width: 100%;
+    font-size: 1rem;
+    padding: .65rem .85rem;
+    border-radius: var(--radius);
+  }
+  /* The lift-and-press hover is a rows-in-a-sheet look here, not floating pills. */
+  .topnav a:hover, .topnav .linkish:hover { transform: none; box-shadow: none; }
+}
+
+@keyframes nav-drop {
+  from { opacity: 0; transform: translateY(-6px); }
+  to   { opacity: 1; transform: translateY(0); }
 }
 
 /* ---------------------------------------------------------------- layout */
@@ -954,6 +1025,143 @@ body.has-selbar .wide { padding-bottom: 7rem; }
 /* Stay clear of the selection bar when it slides up. */
 body.has-selbar .dedsec-corner { display: none; }
 
+/* -------------------------------------------------------------- loaders
+   The aperture as an activity indicator (templates/_loader.svg). Two modes:
+   by default the lens spins while the three 120° sectors light in turn, each
+   in its own colour, so the lit sector appears to chase itself around the
+   mark; with .is-progress the animation stops and JS lights the six wedges
+   one by one (.lit) to show real upload percentage. */
+
+.loader-mark { width: 40px; height: 40px; color: var(--ink); }
+
+/* Each wedge's own colour from the app icon, used by the progress fill. */
+.loader-mark .ldr-w0 { --wcol: #5B8DD9; }
+.loader-mark .ldr-w1 { --wcol: #E0435C; }
+.loader-mark .ldr-w2 { --wcol: #E8833A; }
+.loader-mark .ldr-w3 { --wcol: #E5B93C; }
+.loader-mark .ldr-w4 { --wcol: #7DBB6C; }
+.loader-mark .ldr-w5 { --wcol: #4FB8A8; }
+
+.loader-mark .ldr-lens {
+  transform-box: view-box;
+  transform-origin: 24px 29px;
+  animation: lens-spin 1.6s linear infinite;
+}
+.loader-mark .ldr-seg {
+  fill: var(--dust);
+  animation: ldr-light 1.35s linear infinite;
+}
+/* Sector colours and phases for the chase. After the shorthand above, so the
+   delays aren't reset by it. */
+.loader-mark .ldr-a { --lit: #E0435C; }
+.loader-mark .ldr-b { --lit: #E5B93C; animation-delay: -.9s; }
+.loader-mark .ldr-c { --lit: #4FB8A8; animation-delay: -.45s; }
+@keyframes ldr-light {
+  0%, 32.9%  { fill: var(--lit); }
+  33.3%, 100% { fill: var(--dust); }
+}
+
+/* Determinate mode: no motion, wedges fill clockwise as bytes land. */
+.loader-mark.is-progress .ldr-lens,
+.loader-mark.is-progress .ldr-seg { animation: none; }
+.loader-mark.is-progress .ldr-seg { transition: fill .2s ease; }
+.loader-mark.is-progress .ldr-seg.lit { fill: var(--wcol); }
+
+/* Full-screen wait overlay (shared markup in base.html, window.PSLoad). */
+.loading-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: .3rem;
+  background: color-mix(in srgb, var(--paper) 78%, transparent);
+  backdrop-filter: blur(3px);
+  -webkit-backdrop-filter: blur(3px);
+}
+.loading-overlay[hidden] { display: none; }
+.loading-overlay .loader-mark { width: 64px; height: 64px; }
+.loading-pct {
+  margin: .35rem 0 0;
+  font-family: var(--serif);
+  font-size: 1.6rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.loading-text { margin: 0; color: var(--ink-soft); font-size: .9rem; }
+
+/* Lightbox full-size decode: dim the stale frame, spin over it. */
+.lightbox.is-loading #lb-img { opacity: .35; }
+.lb-loading {
+  display: none;
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+.lightbox.is-loading .lb-loading { display: block; }
+.lb-loading .loader-mark { color: var(--lb-ink); }
+.lb-error {
+  display: none;
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  color: var(--lb-ink);
+  font-size: .95rem;
+  pointer-events: none;
+}
+.lightbox.is-error .lb-error { display: block; }
+
+/* Page-to-page loading: a thin sweep along the very top edge. */
+.pageload {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  z-index: 210;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--berry) 18%, transparent);
+}
+.pageload::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  width: 40%;
+  background: linear-gradient(90deg, var(--berry), var(--honey), var(--sage));
+  animation: pageload-slide 1.1s ease-in-out infinite;
+}
+@keyframes pageload-slide {
+  from { transform: translateX(-110%); }
+  to   { transform: translateX(260%); }
+}
+
+/* Pull-to-refresh chip: hidden above the top edge, dragged down by JS. */
+.ptr-chip {
+  position: fixed;
+  top: var(--sa-top);
+  left: 50%;
+  z-index: 190;
+  width: 48px;
+  height: 48px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--paper-2);
+  box-shadow: 0 1px 3px var(--shadow), 0 8px 20px -8px var(--shadow);
+  transform: translate(-50%, -64px);
+  pointer-events: none;
+}
+.ptr-chip .loader-mark { width: 30px; height: 30px; }
+/* Until the pull commits, hold the sectors dim and still. */
+.ptr-chip:not(.ptr-loading) .ldr-lens { animation: none; }
+.ptr-chip:not(.ptr-loading) .ldr-seg { animation: none; fill: var(--dust); }
+.ptr-chip.ptr-ready:not(.ptr-loading) .ldr-seg { fill: var(--lit); }
+.ptr-chip.ptr-settle { transition: transform .25s ease; }
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     transition-duration: .01ms !important;
@@ -969,4 +1177,11 @@ body.has-selbar .dedsec-corner { display: none; }
   /* The lens stops turning but keeps its colours -- reduced motion shouldn't
      mean a colourless logo. */
   .logo .lens, .logo .seg { animation: none; }
+  /* Loaders freeze as a static tri-colour wheel; the overlay text and the
+     class-driven progress fill still communicate everything. */
+  .loader-mark .ldr-lens { animation: none; }
+  .loader-mark .ldr-seg { animation: none; fill: var(--lit); }
+  .loader-mark.is-progress .ldr-seg { fill: var(--dust); }
+  .loader-mark.is-progress .ldr-seg.lit { fill: var(--wcol); }
+  .pageload::after { animation: none; width: 100%; }
 }

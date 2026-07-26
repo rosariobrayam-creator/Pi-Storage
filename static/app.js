@@ -53,10 +53,14 @@
     // The Pi transcodes HEIC on demand, so warming the neighbours makes
     // arrow-key paging feel instant instead of showing a blank frame.
     // Videos are skipped: speculatively pulling megabytes over Tailscale
-    // to maybe watch a clip is a bad trade.
+    // to maybe watch a clip is a bad trade. Same trade for huge stills --
+    // /photo serves browser-safe originals untouched, so a 20MB panorama
+    // would be pulled twice per arrow press just in case.
+    var PRELOAD_MAX_BYTES = 6 * 1024 * 1024;
     var preload = function (i) {
       if (i < 0 || i >= tiles.length) return;
       if (tiles[i].dataset.type === "video") return;
+      if (+tiles[i].dataset.size > PRELOAD_MAX_BYTES) return;
       new Image().src = "/photo/" + tiles[i].dataset.id;
     };
 
@@ -67,6 +71,16 @@
       video.load();
     };
 
+    // A big still (or a HEIC the Pi transcodes on first view) takes real time
+    // to arrive; spin over the dimmed previous frame instead of going blank.
+    img.addEventListener("load", function () {
+      dialog.classList.remove("is-loading");
+    });
+    img.addEventListener("error", function () {
+      dialog.classList.remove("is-loading");
+      if (img.getAttribute("src")) dialog.classList.add("is-error");
+    });
+
     var show = function (i) {
       if (i < 0 || i >= tiles.length) return;
       index = i;
@@ -74,10 +88,12 @@
       var id = t.dataset.id;
       var isVideo = t.dataset.type === "video";
       stopVideo();
+      dialog.classList.remove("is-loading", "is-error");
       if (isVideo) {
         video.src = "/media/" + id;
         img.removeAttribute("src");
       } else {
+        dialog.classList.add("is-loading");   // the video element has its own UI
         img.src = "/photo/" + id;
       }
       img.hidden = isVideo;
@@ -324,58 +340,6 @@
       "      '-.__.-'       (you know the word. type it in the gallery.)",
     ].join("\n"), "color:#27E67A; font-family:monospace; font-size:12px;");
 
-    // The soundtrack. Drop an mp3 you own at static/dedsec.mp3 on the Pi and
-    // the breach plays it; with no file there, a home-made synth sting fills
-    // in. (Shipping the actual Watch Dogs 2 score with the repo would have
-    // the real DedSec kicking the door in.)
-    var sting = null;
-
-    function synthSting() {
-      try {
-        var AC = window.AudioContext || window.webkitAudioContext;
-        if (!AC) return;
-        var ctx = new AC();
-        var t0 = ctx.currentTime + 0.03;
-        var master = ctx.createGain();
-        master.gain.value = 0.5;
-        master.connect(ctx.destination);
-        var note = function (freq, at, dur, type, vol) {
-          var o = ctx.createOscillator(), g = ctx.createGain();
-          o.type = type;
-          o.frequency.value = freq;
-          g.gain.setValueAtTime(0.0001, t0 + at);
-          g.gain.exponentialRampToValueAtTime(vol, t0 + at + 0.015);
-          g.gain.exponentialRampToValueAtTime(0.0001, t0 + at + dur);
-          o.connect(g);
-          g.connect(master);
-          o.start(t0 + at);
-          o.stop(t0 + at + dur + 0.02);
-        };
-        // A-minor and in a hurry: a low square heartbeat under a glitchy
-        // sawtooth riff. Original, but it knows what it's referencing.
-        [0, 0.3, 0.6, 0.9, 1.2, 1.5].forEach(function (at) {
-          note(55, at, 0.25, "square", 0.25);
-        });
-        [220, 261.63, 329.63, 440, 392, 329.63, 261.63, 329.63]
-          .forEach(function (f, i) { note(f, i * 0.22, 0.2, "sawtooth", 0.16); });
-        setTimeout(function () { ctx.close(); }, 2400);
-      } catch (e) { /* no audio is fine */ }
-    }
-
-    function startAudio() {
-      var fellBack = false;
-      var fallback = function () { if (!fellBack) { fellBack = true; synthSting(); } };
-      sting = new Audio("/static/dedsec.mp3");
-      sting.volume = 0.55;
-      sting.addEventListener("error", fallback);   // no mp3 on the Pi
-      var p = sting.play();
-      if (p && p.catch) p.catch(fallback);
-    }
-
-    function stopAudio() {
-      if (sting) { sting.pause(); sting = null; }
-    }
-
     function breach() {
       if (document.querySelector(".dedsec")) return;
       var el = document.createElement("div");
@@ -392,14 +356,12 @@
         '<img class="dedsec-badge" src="/static/dedsec.webp" alt="">';
       var close = function () {
         el.remove();
-        stopAudio();
         document.removeEventListener("keydown", esc);
       };
       var esc = function (e) { if (e.key === "Escape") close(); };
       el.addEventListener("click", close);
       document.addEventListener("keydown", esc);
       document.body.appendChild(el);
-      startAudio();
       setTimeout(close, 12000);
     }
 
