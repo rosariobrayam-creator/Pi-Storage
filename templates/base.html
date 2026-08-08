@@ -123,8 +123,9 @@
       pctEl.textContent = Math.round(p) + "%";
       pctEl.hidden = false;
       mark.classList.add("is-progress");
+      var step = 100 / wedges.length;
       for (var i = 0; i < wedges.length; i++) {
-        wedges[i].classList.toggle("lit", p >= (i + 1) * (100 / 6) - 0.5);
+        wedges[i].classList.toggle("lit", p >= (i + 1) * step - 0.5);
       }
       overlay.hidden = false;
     },

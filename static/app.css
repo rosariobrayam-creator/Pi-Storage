@@ -1026,46 +1026,47 @@ body.has-selbar .wide { padding-bottom: 7rem; }
 body.has-selbar .dedsec-corner { display: none; }
 
 /* -------------------------------------------------------------- loaders
-   The aperture as an activity indicator (templates/_loader.svg). Two modes:
-   by default the lens spins while the three 120° sectors light in turn, each
-   in its own colour, so the lit sector appears to chase itself around the
-   mark; with .is-progress the animation stops and JS lights the six wedges
-   one by one (.lit) to show real upload percentage. */
+   The aperture as an activity indicator (templates/_loader.svg, generated).
+   Nothing here rotates: every sector holds its own rainbow hue permanently and
+   a wave of brightness travels around them, and that travel is what reads as
+   spin. The sector count, each sector's hue and its position in the wave all
+   come from the SVG as --n, --lit and --i, so changing how many sectors there
+   are needs no edit in this file. With .is-progress the wave stops and JS
+   lights the sectors one by one (.lit) to show real upload percentage. */
 
-.loader-mark { width: 40px; height: 40px; color: var(--ink); }
-
-/* Each wedge's own colour from the app icon, used by the progress fill. */
-.loader-mark .ldr-w0 { --wcol: #5B8DD9; }
-.loader-mark .ldr-w1 { --wcol: #E0435C; }
-.loader-mark .ldr-w2 { --wcol: #E8833A; }
-.loader-mark .ldr-w3 { --wcol: #E5B93C; }
-.loader-mark .ldr-w4 { --wcol: #7DBB6C; }
-.loader-mark .ldr-w5 { --wcol: #4FB8A8; }
-
-.loader-mark .ldr-lens {
-  transform-box: view-box;
-  transform-origin: 24px 29px;
-  animation: lens-spin 1.6s linear infinite;
+.loader-mark {
+  --ldr-dur: 1.8s;
+  width: 40px;
+  height: 40px;
+  color: var(--ink);
 }
 .loader-mark .ldr-seg {
-  fill: var(--dust);
-  animation: ldr-light 1.35s linear infinite;
+  fill: var(--lit);
+  animation: ldr-wave var(--ldr-dur) linear infinite;
+  /* Always negative, so every sector is already mid-wave on the first frame
+     rather than waiting its turn. Counting the index down from --n rather than
+     up walks the crest clockwise, matching the direction the progress fill
+     goes; up would run it backwards. */
+  animation-delay: calc(var(--ldr-dur) * ((var(--n) - var(--i)) / var(--n)) * -1);
 }
-/* Sector colours and phases for the chase. After the shorthand above, so the
-   delays aren't reset by it. */
-.loader-mark .ldr-a { --lit: #E0435C; }
-.loader-mark .ldr-b { --lit: #E5B93C; animation-delay: -.9s; }
-.loader-mark .ldr-c { --lit: #4FB8A8; animation-delay: -.45s; }
-@keyframes ldr-light {
-  0%, 32.9%  { fill: var(--lit); }
-  33.3%, 100% { fill: var(--dust); }
+/* One sector is 100/18 ≈ 5.6% of the cycle, so the 6%-34% plateau keeps about
+   five of them at full brightness and the fade to 60% trails a few more behind.
+   To relight more sectors, widen the plateau: its length over 5.6 is how many.
+   Ends meet at the same opacity, or each sector would pop as it re-enters. */
+@keyframes ldr-wave {
+  0%, 100% { opacity: .3; }
+  6%, 34%  { opacity: 1; }
+  60%      { opacity: .3; }
 }
 
-/* Determinate mode: no motion, wedges fill clockwise as bytes land. */
-.loader-mark.is-progress .ldr-lens,
-.loader-mark.is-progress .ldr-seg { animation: none; }
-.loader-mark.is-progress .ldr-seg { transition: fill .2s ease; }
-.loader-mark.is-progress .ldr-seg.lit { fill: var(--wcol); }
+/* Determinate mode: no wave, sectors fill clockwise as bytes land. Needs its
+   own dim fill because the resting state above is the colour, not the dust. */
+.loader-mark.is-progress .ldr-seg {
+  animation: none;
+  fill: var(--dust);
+  transition: fill .2s ease;
+}
+.loader-mark.is-progress .ldr-seg.lit { fill: var(--lit); }
 
 /* Full-screen wait overlay (shared markup in base.html, window.PSLoad). */
 .loading-overlay {
@@ -1156,8 +1157,8 @@ body.has-selbar .dedsec-corner { display: none; }
   pointer-events: none;
 }
 .ptr-chip .loader-mark { width: 30px; height: 30px; }
-/* Until the pull commits, hold the sectors dim and still. */
-.ptr-chip:not(.ptr-loading) .ldr-lens { animation: none; }
+/* Until the pull commits, hold the sectors dim and still; releasing lights the
+   whole rainbow at once, before the wave takes over on .ptr-loading. */
 .ptr-chip:not(.ptr-loading) .ldr-seg { animation: none; fill: var(--dust); }
 .ptr-chip.ptr-ready:not(.ptr-loading) .ldr-seg { fill: var(--lit); }
 .ptr-chip.ptr-settle { transition: transform .25s ease; }
@@ -1177,11 +1178,10 @@ body.has-selbar .dedsec-corner { display: none; }
   /* The lens stops turning but keeps its colours -- reduced motion shouldn't
      mean a colourless logo. */
   .logo .lens, .logo .seg { animation: none; }
-  /* Loaders freeze as a static tri-colour wheel; the overlay text and the
+  /* Loaders freeze as a static rainbow wheel; the overlay text and the
      class-driven progress fill still communicate everything. */
-  .loader-mark .ldr-lens { animation: none; }
   .loader-mark .ldr-seg { animation: none; fill: var(--lit); }
   .loader-mark.is-progress .ldr-seg { fill: var(--dust); }
-  .loader-mark.is-progress .ldr-seg.lit { fill: var(--wcol); }
+  .loader-mark.is-progress .ldr-seg.lit { fill: var(--lit); }
   .pageload::after { animation: none; width: 100%; }
 }

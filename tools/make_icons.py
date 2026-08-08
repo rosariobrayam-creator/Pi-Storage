@@ -1,9 +1,14 @@
-"""Generate the Pi-Storage mark: two SVGs and the PNG app icons.
+"""Generate the Pi-Storage mark: three SVGs and the PNG app icons.
 
 The mark is a camera aperture with a raspberry leaf on top. Geometry is defined
 once here, in a 48-unit viewBox, and everything is emitted from it -- the header
-logo, the favicon, and the iOS/Android icons -- so the shapes can never drift
-apart. iOS ignores SVG for home screen icons, which is why PNGs exist at all.
+logo, the favicon, the loading spinner and the iOS/Android icons -- so the
+shapes can never drift apart. iOS ignores SVG for home screen icons, which is
+why PNGs exist at all.
+
+The brand mark is six-bladed. The spinner is the same construction with more,
+gentler blades (LOADER_N / LOADER_SWEEP) and a full rainbow instead of the
+seven-hue brand wheel.
 
 Run on a dev machine and commit the output; the Pi never needs this:
     python tools/make_icons.py
@@ -41,10 +46,36 @@ BLADE_SWEEP = 58.0  # degrees a blade leans; what makes it read as an aperture
 STROKE = 2.0
 RING_STROKE = 2.2
 
+# The spinner. More blades than the brand mark, so they have to lean far less:
+# 58 degrees of sweep across a 20-degree blade would smear each sector into a
+# thin spiral that turns to mush at the 30px pull-to-refresh size.
+LOADER_N = 18
+LOADER_SWEEP = 24.0
+
 
 def _pt(radius, deg):
     a = math.radians(deg)
     return (CX + radius * math.cos(a), CY + radius * math.sin(a))
+
+
+def _hsl_hex(hue, sat, lum):
+    """HSL (degrees, 0-1, 0-1) to #RRGGBB."""
+    c = (1 - abs(2 * lum - 1)) * sat
+    x = c * (1 - abs((hue / 60.0) % 2 - 1))
+    m = lum - c / 2
+    r, g, b = [(c, x, 0), (x, c, 0), (0, c, x),
+               (0, x, c), (x, 0, c), (c, 0, x)][int(hue // 60) % 6]
+    return "#{:02X}{:02X}{:02X}".format(
+        round((r + m) * 255), round((g + m) * 255), round((b + m) * 255))
+
+
+# The spinner's rainbow: evenly spaced hues rather than the brand's seven, but
+# anchored on raspberry and held at the brand wheel's average saturation and
+# lightness, so it still reads as Pi-Storage and not as a stock hue ramp.
+LOADER_WHEEL_HEX = [
+    _hsl_hex((351 + i * (360.0 / LOADER_N)) % 360, 0.62, 0.58)
+    for i in range(LOADER_N)
+]
 
 
 def _bezier(p0, c1, c2, p3, steps=24):
@@ -59,30 +90,34 @@ def _bezier(p0, c1, c2, p3, steps=24):
     return out
 
 
-# Six blade vertices around the opening, starting at the top.
-ANGLES = [-90 + i * 60 for i in range(6)]
-VERTS = [_pt(INNER_R, a) for a in ANGLES]
-
 # Icon separators between the coloured pie pieces: much thinner than the
 # brand line work, so the colour dominates and the ink just divides.
 THIN = 1.1
 
 
-def _sector(i, steps=12):
+def _angles(n):
+    """Blade vertex angles around the opening, starting at the top."""
+    return [-90 + i * (360.0 / n) for i in range(n)]
+
+
+def _sector(i, angles, verts, sweep, steps=12):
     """The pie piece between blade i and blade i+1: out along blade i, around
-    the ring arc, back in along blade i+1, closed by the hex edge."""
-    a0 = ANGLES[i] + BLADE_SWEEP
-    a1 = ANGLES[i] + 60 + BLADE_SWEEP
-    pts = [VERTS[i], _pt(RING_R, a0)]
+    the ring arc, back in along blade i+1, closed by the opening's edge."""
+    n = len(angles)
+    a0 = angles[i] + sweep
+    a1 = angles[i] + (360.0 / n) + sweep
+    pts = [verts[i], _pt(RING_R, a0)]
     for s in range(1, steps + 1):
         pts.append(_pt(RING_R, a0 + (a1 - a0) * s / steps))
-    pts.append(VERTS[(i + 1) % 6])
+    pts.append(verts[(i + 1) % n])
     return pts
 
 # The opening: a hexagon. Each blade then leans out to the ring, all the same
 # direction, which is what gives an aperture its characteristic swirl. Critically
 # these do NOT pass through the centre -- lines through the centre read as a
 # wagon wheel, not a camera.
+ANGLES = _angles(6)
+VERTS = [_pt(INNER_R, a) for a in ANGLES]
 HEX = [VERTS[i] for i in range(6)] + [VERTS[0]]
 BLADES = [(VERTS[i], _pt(RING_R, ANGLES[i] + BLADE_SWEEP)) for i in range(6)]
 
@@ -118,7 +153,8 @@ def draw_mark(size: int, content_fraction: float) -> Image.Image:
 
     # Colour first: each pie piece between two blades gets a wheel hue.
     for i in range(6):
-        d.polygon([P(p) for p in _sector(i)], fill=WHEEL[i])
+        pts = _sector(i, ANGLES, VERTS, BLADE_SWEEP)
+        d.polygon([P(p) for p in pts], fill=WHEEL[i])
 
     # Ink on top: full-weight brand lines, thin separators between pieces.
     stroke(LEAF_L, STROKE)
@@ -166,8 +202,9 @@ def _shapes(stroke_colour: str, dot_colour: str, animated: bool = False) -> str:
             '<g class="lens">',
         ]
         for i in range(6):
+            pts = _sector(i, ANGLES, VERTS, BLADE_SWEEP)
             parts.append(
-                f'  <path class="seg seg-{i}" d="{_poly(_sector(i))} Z"'
+                f'  <path class="seg seg-{i}" d="{_poly(pts)} Z"'
                 f' fill="{WHEEL_HEX[i]}"/>'
             )
         parts.append(
@@ -201,7 +238,8 @@ def _shapes_filled() -> str:
     """Icon variant: coloured pie pieces under thin ink separators."""
     parts = []
     for i in range(6):
-        parts.append(f'<path d="{_poly(_sector(i))} Z" fill="{WHEEL_HEX[i]}"/>')
+        pts = _sector(i, ANGLES, VERTS, BLADE_SWEEP)
+        parts.append(f'<path d="{_poly(pts)} Z" fill="{WHEEL_HEX[i]}"/>')
     parts.append(
         f'<g fill="none" stroke="{INK_HEX}"'
         ' stroke-linecap="round" stroke-linejoin="round">'
@@ -220,6 +258,42 @@ def _shapes_filled() -> str:
     parts.append("</g>")
     parts.append(f'<circle cx="{CX}" cy="{CY}" r="{DOT_R}" fill="{BERRY_HEX}"/>')
     return "\n".join(parts)
+
+
+def write_loader_svg() -> None:
+    """The activity spinner: the aperture with more blades, a rainbow, and no
+    leaves or separators.
+
+    Each sector carries its own hue and its index as inline custom properties,
+    and the root carries the sector count, so app.css only has to describe the
+    brightness wave -- changing LOADER_N needs no CSS edit. Nothing here spins;
+    the illusion of rotation is entirely the wave travelling sector to sector.
+    """
+    angles = _angles(LOADER_N)
+    verts = [_pt(INNER_R, a) for a in angles]
+    parts = [
+        "<!-- Generated by tools/make_icons.py -- edit the geometry there, not here.\n"
+        "     The Pi-Storage aperture as a spinner: LOADER_N blades, each with its\n"
+        "     own rainbow hue (--lit) and phase index (--i); --n on the root is the\n"
+        "     sector count. Deliberately NOT class=\"seg\": those names belong to the\n"
+        "     storage bar and the header logo. -->",
+        f'<svg class="loader-mark" viewBox="0 0 48 48" aria-hidden="true"'
+        f' style="--n:{LOADER_N}" xmlns="http://www.w3.org/2000/svg">',
+        f'<circle cx="{CX}" cy="{CY}" r="{RING_R}" fill="none"'
+        f' stroke="currentColor" stroke-width="{RING_STROKE}"/>',
+    ]
+    for i in range(LOADER_N):
+        pts = _sector(i, angles, verts, LOADER_SWEEP)
+        parts.append(
+            f'<path class="ldr-seg" style="--i:{i};--lit:{LOADER_WHEEL_HEX[i]}"'
+            f' d="{_poly(pts)} Z"/>'
+        )
+    parts.append(
+        f'<circle cx="{CX}" cy="{CY}" r="{DOT_R}" fill="var(--berry, {BERRY_HEX})"/>'
+    )
+    parts.append("</svg>")
+    (TEMPLATES / "_loader.svg").write_text("\n".join(parts) + "\n", encoding="utf-8")
+    print(f"wrote {TEMPLATES / '_loader.svg'}  ({LOADER_N} sectors)")
 
 
 def write_svgs() -> None:
@@ -251,6 +325,7 @@ def write_svgs() -> None:
 def main() -> None:
     STATIC.mkdir(parents=True, exist_ok=True)
     write_svgs()
+    write_loader_svg()
     targets = [
         # iOS crops to a squircle, so the mark sits smaller on the touch icon.
         ("icon-180.png", 180, 0.66),
